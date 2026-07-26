@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Raw Tianchi data (download separately; see 推荐系统/README.md)
+推荐系统/*.csv
+!推荐系统/README.md
+
+# Generated pipeline artifacts
+result/
+result_full_offline/
+result_full_online/
+pipeline_logs/
+*.pkl
+*.h5
+*.weights.h5
+*.log
+
+# Local scratch / archives
+tmp/
+temp/
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+

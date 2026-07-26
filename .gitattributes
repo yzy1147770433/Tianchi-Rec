@@ -1,0 +1,14 @@
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.ps1 text eol=crlf
+
+# Treat generated model/data formats as binary if force-added intentionally.
+*.pkl binary
+*.h5 binary
+*.npy binary
+*.npz binary
+

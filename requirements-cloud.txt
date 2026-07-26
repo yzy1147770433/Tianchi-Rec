@@ -1,0 +1,11 @@
+# Recommended Linux/Python 3.10 environment for the complete pipeline.
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.5.2
+lightgbm==4.5.0
+tensorflow[and-cuda]==2.15.1
+deepctr==0.9.4
+deepmatch==0.3.2
+faiss-cpu==1.8.0.post1
+gensim==4.3.3
+tqdm==4.67.1
