@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+from src.tianchi_rec.config import DATA_DIR, OFFLINE_DIR, ONLINE_DIR, PROJECT_ROOT, env_path
+
 import numpy as np
 import pandas as pd
 
@@ -13,19 +15,13 @@ except ModuleNotFoundError as exc:
     raise ModuleNotFoundError('LightGBM is required for ranking.') from exc
 
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / '推荐系统'
 MODE = os.environ.get('PIPELINE_MODE', 'validate').lower()
 if MODE not in {'validate', 'final'}:
     raise ValueError("PIPELINE_MODE must be 'validate' or 'final'.")
 
-TRAIN_RESULT_DIR = Path(
-    os.environ.get('RANK_TRAIN_RESULT_DIR', BASE_DIR / 'result_full_offline')
-)
-TEST_RESULT_DIR = Path(
-    os.environ.get('RANK_TEST_RESULT_DIR', BASE_DIR / 'result_full_online')
-)
-OUTPUT_DIR = Path(os.environ.get('RANK_OUTPUT_DIR', TEST_RESULT_DIR))
+TRAIN_RESULT_DIR = env_path('RANK_TRAIN_RESULT_DIR', OFFLINE_DIR)
+TEST_RESULT_DIR = env_path('RANK_TEST_RESULT_DIR', ONLINE_DIR)
+OUTPUT_DIR = env_path('RANK_OUTPUT_DIR', TEST_RESULT_DIR)
 
 ENABLE_DIN = os.environ.get('ENABLE_DIN', '0') == '1'
 GPU_ID = os.environ.get('CUDA_VISIBLE_DEVICES', '0')
@@ -46,7 +42,7 @@ FEATURE_COLUMNS = [
 
 def resolve_directory(path):
     path = Path(path)
-    return path if path.is_absolute() else BASE_DIR / path
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 TRAIN_RESULT_DIR = resolve_directory(TRAIN_RESULT_DIR)

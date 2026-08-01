@@ -11,21 +11,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+from src.tianchi_rec.config import (
+    DATA_DIR,
+    LOG_DIR,
+    OFFLINE_DIR,
+    ONLINE_DIR,
+    PROJECT_ROOT,
+    REQUIRED_RAW_FILES,
+)
 
-ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / '推荐系统'
-OFFLINE_DIR = ROOT / 'result_full_offline'
-ONLINE_DIR = ROOT / 'result_full_online'
-LOG_DIR = ROOT / 'pipeline_logs'
+
+ROOT = PROJECT_ROOT
 
 
 def check_raw_data():
-    required = [
-        DATA_DIR / 'train_click_log.csv',
-        DATA_DIR / 'testA_click_log.csv',
-        DATA_DIR / 'articles.csv',
-        DATA_DIR / 'articles_emb.csv',
-    ]
+    required = [DATA_DIR / filename for filename in REQUIRED_RAW_FILES]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise FileNotFoundError(f'Missing raw data files: {missing}')

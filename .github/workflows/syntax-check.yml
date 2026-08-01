@@ -20,6 +20,6 @@ jobs:
       - name: Compile Python sources
         run: >-
           python -m py_compile
+          src/__init__.py src/tianchi_rec/__init__.py src/tianchi_rec/config.py
           Baseline.py Recall.py tezhenggongcheng.py
           rank.py rank_final.py run_pipeline.py
-

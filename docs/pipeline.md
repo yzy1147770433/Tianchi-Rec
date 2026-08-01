@@ -1,9 +1,9 @@
 # Tianchi news recommendation pipeline
 
-This project now has two isolated data products:
+This project has two isolated artifact directories:
 
-- `result_full_offline`: last-click holdout data for model validation/training.
-- `result_full_online`: full-history test candidates and the final submission.
+- `artifacts/offline`: last-click holdout data for model validation/training.
+- `artifacts/online`: full-history test candidates and the final submission.
 
 ## Cloud environment
 
@@ -31,7 +31,7 @@ python run_pipeline.py --mode all --recall multi --din --gpu 0
 The final file is:
 
 ```text
-result_full_online/tianchi_news_submission.csv
+artifacts/online/tianchi_news_submission.csv
 ```
 
 Resume after interruption without rerunning completed stages:
@@ -58,5 +58,5 @@ python run_pipeline.py --mode validate --recall itemcf --valid-users 20000
 - `--resume`: skip a stage only when all of that stage's expected files exist.
 
 Every stage runs as a separate Python process. Logs are stored in
-`pipeline_logs`, so memory is returned to the operating system between stages
+`logs`, so memory is returned to the operating system between stages
 and failures can be diagnosed without losing completed artifacts.

@@ -6,6 +6,7 @@ import gc, os
 import logging
 import time
 from pathlib import Path
+from src.tianchi_rec.config import DATA_DIR, OFFLINE_DIR, ONLINE_DIR, env_path
 
 try:
     import lightgbm as lgb
@@ -55,17 +56,14 @@ def reduce_mem(df):
                                                                                                            (time.time()-starttime)/60))
     return df
 
-BASE_DIR = Path(__file__).resolve().parent
 OFFLINE = os.environ.get('OFFLINE_VALIDATION', '1') == '1'
 VALID_USER_NUMS = int(os.environ.get('VALID_USER_NUMS', '20000'))
 np.random.seed(42)
 
-data_path = str(BASE_DIR / '推荐系统') + os.sep
-default_result_dir = BASE_DIR / ('result_full_offline' if OFFLINE else 'result_full_online')
-result_dir = Path(os.environ.get('RECALL_RESULT_DIR', default_result_dir))
-if not result_dir.is_absolute():
-    result_dir = BASE_DIR / result_dir
-result_dir.mkdir(exist_ok=True)
+data_path = str(DATA_DIR) + os.sep
+default_result_dir = OFFLINE_DIR if OFFLINE else ONLINE_DIR
+result_dir = env_path('RECALL_RESULT_DIR', default_result_dir)
+result_dir.mkdir(parents=True, exist_ok=True)
 save_path = str(result_dir) + os.sep
 RECALL_METHOD = os.environ.get('RECALL_METHOD', 'itemcf')
 USE_MULTI_RECALL = RECALL_METHOD == 'multi'

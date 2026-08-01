@@ -24,6 +24,7 @@ from deepmatch.models import *
 from deepmatch.utils import NegativeSampler, sampledsoftmaxloss #  超大量级的多分类问题 需要用这个
 warnings.filterwarnings('ignore')
 from pathlib import Path
+from src.tianchi_rec.config import DATA_DIR, OFFLINE_DIR, ONLINE_DIR, env_path
 
 
 # DeepMatch 0.3.1 的 get_item_embedding 未声明 Lambda 输出形状，
@@ -43,7 +44,6 @@ np.random.seed(42)
 random.seed(42)
 tf.random.set_seed(42)
 
-BASE_DIR = Path(__file__).resolve().parent
 OFFLINE = os.environ.get('OFFLINE_VALIDATION', '1') == '1'
 RECALL_METHOD = os.environ.get('RECALL_METHOD', 'itemcf')
 if RECALL_METHOD not in {'itemcf', 'multi'}:
@@ -52,13 +52,10 @@ ITEMCF_SIM_TOPK = int(os.environ.get('ITEMCF_SIM_TOPK', '100'))
 SINGLE_RECALL_TOPK = int(os.environ.get('SINGLE_RECALL_TOPK', '50'))
 FINAL_RECALL_TOPK = int(os.environ.get('FINAL_RECALL_TOPK', '50'))
 
-data_path = BASE_DIR / '推荐系统' # 天池平台路径
-# save_path = BASE_DIR / 'result'  # 天池平台路径
-default_result_dir = BASE_DIR / ('result_full_offline' if OFFLINE else 'result_full_online')
-save_path = Path(os.environ.get('RECALL_RESULT_DIR', default_result_dir))
-if not save_path.is_absolute():
-    save_path = BASE_DIR / save_path
-save_path.mkdir(exist_ok=True)
+data_path = DATA_DIR
+default_result_dir = OFFLINE_DIR if OFFLINE else ONLINE_DIR
+save_path = env_path('RECALL_RESULT_DIR', default_result_dir)
+save_path.mkdir(parents=True, exist_ok=True)
 # 做召回评估的一个标志, 如果不进行评估就是直接使用全量数据进行召回
 metric_recall = OFFLINE
 

@@ -61,15 +61,24 @@
 ├── run_pipeline.py          # 跨平台端到端流水线入口
 ├── run_pipeline.ps1         # Windows PowerShell 启动脚本
 ├── requirements.txt         # Python 依赖
-├── PIPELINE.md              # 云端运行与参数说明
-└── 推荐系统/                # 本地数据目录，CSV 不提交到 Git
+├── src/tianchi_rec/
+│   └── config.py            # 数据、产物和日志的统一路径配置
+├── data/
+│   ├── README.md            # 数据下载与放置说明
+│   └── raw/                 # 本地原始数据，CSV 不提交到 Git
+├── artifacts/               # 模型、特征及提交文件，不提交到 Git
+│   ├── offline/             # 线下验证产物
+│   └── online/              # 线上预测产物
+├── logs/                    # 分阶段运行日志，不提交到 Git
+└── docs/
+    └── pipeline.md          # 云端运行与参数说明
 ```
 
 运行过程中会自动创建以下目录：
 
-- `result_full_offline/`：线下召回、训练特征、验证结果和融合权重
-- `result_full_online/`：全量测试候选、模型及最终提交文件
-- `pipeline_logs/`：各阶段日志
+- `artifacts/offline/`：线下召回、训练特征、验证结果和融合权重
+- `artifacts/online/`：全量测试候选、模型及最终提交文件
+- `logs/`：各阶段日志
 
 这些目录均已写入 `.gitignore`。
 
@@ -108,10 +117,10 @@ python -m pip install -r requirements.txt
 
 ## 数据准备
 
-从天池新闻推荐赛题页面下载数据，并解压到 `推荐系统/`：
+从天池新闻推荐赛题页面下载数据，并解压到 `data/raw/`：
 
 ```text
-推荐系统/
+data/raw/
 ├── train_click_log.csv
 ├── testA_click_log.csv
 ├── articles.csv
@@ -140,7 +149,7 @@ python run_pipeline.py --mode all --recall multi --din --gpu 0
 最终提交文件生成在：
 
 ```text
-result_full_online/tianchi_news_submission.csv
+artifacts/online/tianchi_news_submission.csv
 ```
 
 Windows 也可直接运行：
@@ -225,4 +234,3 @@ python run_pipeline.py --mode all --recall multi --din --gpu 0 --resume
 ## 数据与合规说明
 
 本仓库仅提供算法实现，不重新分发天池比赛数据。使用者应遵守数据集及比赛页面的授权条款。项目暂未声明开源许可证；如需复用或分发代码，请先确认仓库所有者添加的许可证。
-

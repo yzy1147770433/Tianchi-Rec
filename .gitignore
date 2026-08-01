@@ -22,19 +22,26 @@ htmlcov/
 Thumbs.db
 desktop.ini
 
-# Raw Tianchi data (download separately; see 推荐系统/README.md)
-推荐系统/*.csv
-!推荐系统/README.md
+# Raw Tianchi data (download separately; see data/README.md)
+data/raw/*
+!data/raw/.gitkeep
 
 # Generated pipeline artifacts
-result/
-result_full_offline/
-result_full_online/
-pipeline_logs/
+artifacts/*
+!artifacts/.gitkeep
+logs/*
+!logs/.gitkeep
 *.pkl
 *.h5
 *.weights.h5
 *.log
+
+# Legacy locations retained as a safety net during migration
+推荐系统/*.csv
+result/
+result_full_offline/
+result_full_online/
+pipeline_logs/
 
 # Local scratch / archives
 tmp/
@@ -44,4 +51,3 @@ temp/
 *.rar
 *.tar
 *.tar.gz
-

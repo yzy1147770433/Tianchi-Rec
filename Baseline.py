@@ -12,11 +12,12 @@ import warnings
 from collections import defaultdict
 import collections
 from pathlib import Path
+from src.tianchi_rec.config import DATA_DIR, LEGACY_DIR, env_path
 warnings.filterwarnings('ignore')
-# data_path = './data_raw/'
-BASE_DIR = Path(__file__).resolve().parent
-data_path = BASE_DIR / '推荐系统' # 天池平台路径
-save_path = BASE_DIR / 'result'  # 天池平台路径
+
+data_path = DATA_DIR
+save_path = env_path('BASELINE_OUTPUT_DIR', LEGACY_DIR)
+save_path.mkdir(parents=True, exist_ok=True)
 
 # 节约内存的一个标配函数
 def reduce_mem(df):
@@ -137,7 +138,7 @@ def itemcf_sim(df):
             i2i_sim_[i][j] = wij / math.sqrt(item_cnt[i] * item_cnt[j])
     
     # 将得到的相似性矩阵保存到本地
-    pickle.dump(i2i_sim_, open(save_path + 'itemcf_i2i_sim.pkl', 'wb'))
+    pickle.dump(i2i_sim_, open(save_path / 'itemcf_i2i_sim.pkl', 'wb'))
     
     return i2i_sim_
 
@@ -191,7 +192,7 @@ user_recall_items_dict = collections.defaultdict(dict)
 user_item_time_dict = get_user_item_time(all_click_df)
 
 # 去取文章相似度
-i2i_sim = pickle.load(open(save_path + 'itemcf_i2i_sim.pkl', 'rb'))
+i2i_sim = pickle.load(open(save_path / 'itemcf_i2i_sim.pkl', 'rb'))
 
 # 相似文章的数量
 sim_item_topk = 10
@@ -232,7 +233,7 @@ def submit(recall_df, topk=5, model_name=None):
     submit = submit.rename(columns={'': 'user_id', 1: 'article_1', 2: 'article_2', 
                                                   3: 'article_3', 4: 'article_4', 5: 'article_5'})
     
-    save_name = save_path + model_name + '_' + datetime.today().strftime('%m-%d') + '.csv'
+    save_name = save_path / f'{model_name}_{datetime.today():%m-%d}.csv'
     submit.to_csv(save_name, index=False, header=True)
 
     # 获取测试集
