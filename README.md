@@ -1,5 +1,31 @@
 # 天池新闻推荐：多路召回与融合排序
 
+## Recommended v2 defaults
+
+The default multi-recall profile now uses only ItemCF, content Embedding, and
+YouTubeDNN UserCF. Weighted RRF uses weights `1.0 / 0.2 / 0.2`, `rrf_k=60`,
+and keeps 150 candidates for ranking. Direct YouTubeDNN and Cold Start remain
+available for ablation, but their default weights are zero.
+
+```bash
+python run_pipeline.py --mode offline --recall multi \
+  --recall-profile recommended_v2 \
+  --fusion-method weighted_rrf --recall-topk 150 --rrf-k 60 \
+  --experiment-name recommended_v2_top150
+
+# Explicit channel selection is also supported.
+python run_pipeline.py --mode offline --recall multi \
+  --recall-channels itemcf,embedding,youtubednn_usercf \
+  --fusion-method weighted_rrf --recall-topk 150 --rrf-k 60 \
+  --experiment-name recommended_v2_top150
+```
+
+Recall-source metadata is validated and added to the real ranking matrices,
+including RRF score, source count, per-channel flag/score/rank/reciprocal rank,
+best/mean rank, and cross-channel consistency flags. Missing ranks use 151.
+See [pipeline commands](docs/pipeline.md) for isolated experiments, ranking
+ablation, cache validation, and the optional DIN smoke test.
+
 一个面向天池新闻推荐数据集的端到端推荐系统。项目采用工业界常见的两阶段架构：先通过多路召回从文章库中生成候选集，再使用 LightGBM 和 DIN 对候选文章精排，最终为每个测试用户输出 Top 5 新闻。
 
 > 数据集、缓存特征和模型权重体积较大，不包含在本仓库中。请按照[数据准备](#数据准备)章节在本地放置数据。
@@ -165,7 +191,10 @@ python -m tianchi_rec --mode validate --recall itemcf --valid-users 2000
 ### 完整训练与预测
 
 ```bash
-python run_pipeline.py --mode all --recall multi --din --gpu 0
+python run_pipeline.py --mode all --recall multi \
+  --recall-profile recommended_v2 --recall-topk 150 \
+  --fusion-method weighted_rrf --rrf-k 60 \
+  --experiment-name recommended_v2_top150
 ```
 
 最终提交文件生成在：
@@ -183,7 +212,9 @@ Windows 也可直接运行：
 ### 断点续跑
 
 ```bash
-python run_pipeline.py --mode all --recall multi --din --gpu 0 --resume
+python run_pipeline.py --mode all --recall multi \
+  --recall-profile recommended_v2 --recall-topk 150 \
+  --experiment-name recommended_v2_top150 --resume
 ```
 
 只有当召回方式、候选数量、DIN 配置和原始数据均未变化时才使用 `--resume`，否则可能混用过期产物。
@@ -195,13 +226,18 @@ python run_pipeline.py --mode all --recall multi --din --gpu 0 --resume
 | `--mode` | `all` | `offline`/`validate`、`final` 或完整流程 `all` |
 | `--recall` | `multi` | `itemcf` 或 `multi` |
 | `--valid-users` | `20000` | 线下验证用户数 |
-| `--recall-topk` | `200` | 精排前每个用户保留的融合候选数 |
+| `--recall-profile` | `recommended_v2` | 默认三路配置；也支持 `all_channels`、`itemcf_only` |
+| `--recall-channels` | 未指定 | 显式选择通道，优先于 profile |
+| `--experiment-name` | `recommended_v2_top150` | 隔离召回、特征、模型和分数产物 |
+| `--recall-topk` | `150` | 精排前每个用户保留的融合候选数 |
 | `--fusion-method` | `weighted_rrf` | `weighted_rrf` 或旧版 `legacy_score_fusion` |
 | `--rrf-k` | `60` | RRF 排名平滑常数 |
 | `--channel-weights` | 配置默认值 | JSON 格式的通道权重覆盖 |
 | `--recall-only` | 关闭 | 只运行召回、评估与诊断，不运行特征和排序 |
 | `--run-ablation` | 关闭 | 保存 A-I 召回消融结果 |
 | `--weight-search` | 关闭 | 逐通道搜索 RRF 权重（不覆盖默认配置） |
+| `--rank-models` | `classifier` | 可选 `classifier,ranker`；先运行分类模型，再按需运行 LambdaRank |
+| `--disable-recall-source-features` | 关闭 | 消融时关闭召回来源特征 |
 | `--din` | 关闭 | 是否训练 DIN |
 | `--din-batch-size` | `64` | DIN batch size，显存不足时可改为 32 |
 | `--din-epochs` | `2` | DIN 训练轮数 |
@@ -210,17 +246,21 @@ python run_pipeline.py --mode all --recall multi --din --gpu 0 --resume
 
 ## 离线实验结果
 
-当前保存日志对应 20,000 个验证用户、每用户 50 个候选：
+当前保存日志对应同一批 20,000 个验证用户、三路 Weighted RRF Top 150。指标分母包含
+候选集中没有正样本的用户，因此候选覆盖率是排序指标的真实上限：
 
-| 模型 | MRR | HitRate@5 | NDCG@5 | HitRate@10 | NDCG@10 |
+| 模型/特征组 | MRR | HitRate@5 | NDCG@5 | HitRate@10 | NDCG@10 |
 |---|---:|---:|---:|---:|---:|
-| LightGBM LambdaRank | 0.041689 | 0.058400 | 0.035139 | 0.105850 | 0.050359 |
-| LightGBM Classifier | **0.128728** | **0.228150** | **0.146269** | **0.286500** | **0.165273** |
-| DIN | 0.048591 | 0.061750 | 0.041290 | 0.108650 | 0.056366 |
+| Classifier，无来源特征 | 0.255856 | 0.390350 | 0.270114 | 0.516950 | 0.311344 |
+| Classifier，54 个完整特征 | 0.263405 | **0.399450** | 0.278748 | **0.520250** | 0.318053 |
+| LambdaRank，54 个完整特征 | **0.264290** | 0.397950 | **0.279241** | 0.517350 | **0.318054** |
 
-- 候选集真实下一点击覆盖率：`0.310400`
-- NDCG@5 网格搜索选择的融合权重：Classifier `1.0`，LambdaRank `0.0`，DIN `0.0`
-- 最终提交规模：50,000 个测试用户，每个用户 5 篇文章
+- 验证候选集真实下一点击覆盖率：`0.655800`（13,116 / 20,000）。
+- 完整来源特征相对无来源特征的 Classifier：NDCG@5 `+0.008634`，HitRate@5 `+0.009100`。
+- DIN 只完成了 20,000 行训练/20,000 行验证的 1 epoch 环境冒烟测试，不能与上表比较；
+  未伪造或外推完整 DIN 指标。
+- A/B/E 高成本对照组尚未运行时，`ranking_ablation_results.csv` 会明确记录
+  `missing_artifacts`，不会填入虚构结果。
 
 实验结果受数据版本、随机种子、依赖版本和硬件环境影响，表中结果用于说明当前实现，不代表比赛最优成绩。
 
@@ -234,33 +274,44 @@ python run_pipeline.py --mode all --recall multi --din --gpu 0 --resume
 4. **Embedding UserCF**：使用 YouTubeDNN 用户向量检索相似用户，再扩展相似用户点击过的文章。
 5. **冷启动召回**：结合用户历史类别、平均字数和文章新鲜度筛选未出现在点击日志中的文章。
 
-五路融合默认使用 Weighted Reciprocal Rank Fusion：每路先按原始分数降序、去重，
+多路融合默认使用 Weighted Reciprocal Rank Fusion：每路先按原始分数降序、去重，
 再为候选累计 `channel_weight / (rrf_k + rank)`。默认权重在
-`src/tianchi_rec/config.py` 中统一维护：ItemCF 为 `1.0`，Embedding、YouTubeDNN、
-YouTubeDNN UserCF 均为 `0.20`，Cold Start 为 `0.05`。旧 Min-Max 等权融合仍可通过
+`src/tianchi_rec/config.py` 中统一维护：ItemCF 为 `1.0`，Embedding 与 YouTubeDNN
+UserCF 均为 `0.20`，YouTubeDNN direct 与 Cold Start 为 `0.0`。因此默认只融合前三路；
+后两路仍可显式启用做消融。旧 Min-Max 等权融合仍可通过
 `--fusion-method legacy_score_fusion` 运行。
 
 召回阶段会保存兼容旧流水线的 `final_recall_items_dict.pkl`。Weighted RRF 还会保存
 `final_recall_candidate_sources.pkl`，其中包含与最终候选顺序对齐的各通道排名，可展开为
-`rrf_score`、通道数、来源标记和各路 rank 特征。
+`rrf_score`、通道数、来源标记、原始分数、rank、倒数 rank、best/mean rank 和跨通道
+一致性特征。元数据会进行配置指纹和候选一一对齐校验，缺失 rank 使用 `topk + 1`。
 
 常用离线命令：
 
 ```bash
 # ItemCF（与多路融合使用同一逐用户最后点击答案集）
-python run_pipeline.py --mode offline --recall itemcf --recall-topk 200 --recall-only
+python run_pipeline.py --mode offline --recall itemcf --recall-topk 150 \
+  --experiment-name itemcf_top150 --recall-only
 
 # 旧 Min-Max 等权融合
-python run_pipeline.py --mode offline --recall multi --fusion-method legacy_score_fusion --recall-topk 200 --recall-only
+python run_pipeline.py --mode offline --recall multi --recall-profile all_channels \
+  --fusion-method legacy_score_fusion --recall-topk 150 \
+  --experiment-name legacy_five_top150 --recall-only
 
 # Weighted RRF
-python run_pipeline.py --mode offline --recall multi --fusion-method weighted_rrf --recall-topk 200 --rrf-k 60 --recall-only
+python run_pipeline.py --mode offline --recall multi \
+  --recall-channels itemcf,embedding,youtubednn_usercf \
+  --fusion-method weighted_rrf --recall-topk 150 --rrf-k 60 \
+  --experiment-name recommended_v2_top150 --recall-only
 
 # 基于已有五路 pickle 产物运行消融，避免重新训练 YouTubeDNN
-python run_recall_experiments.py --experiment ablation --recall-topk 200 --rrf-k 60
+python run_recall_experiments.py --experiment ablation --recall-topk 150 --rrf-k 60
 
 # 可选逐通道权重搜索
-python run_recall_experiments.py --experiment weight-search --recall-topk 200 --rrf-k 60
+python run_recall_experiments.py --experiment weight-search --recall-topk 150 --rrf-k 60
+
+# 汇总已有 A-E 排序实验；缺失实验只标记，不伪造结果
+python run_ranking_experiments.py --experiment ablation --models classifier,ranker
 ```
 
 ### 排序特征
@@ -282,8 +333,8 @@ python run_recall_experiments.py --experiment weight-search --recall-topk 200 --
 
 ## 已知限制与后续方向
 
-- Weighted RRF 仍不保证 RRF@50 一定高于 ItemCF@50；召回池默认扩大到 200，精排负责最终 Top 5。
-- 可将已保存的每路排名和来源元数据接入精排；当前主接口仍保持 `(item_id, score)` 兼容格式。
+- Weighted RRF 仍不保证 RRF@50 一定高于 ItemCF@50；召回池默认扩大到 150，精排负责最终 Top 5。
+- 每路排名和来源元数据已接入 LightGBM 与 DIN 的真实训练/预测矩阵；主召回接口仍保持 `(item_id, score)` 兼容格式。
 - 召回覆盖率仍是主要瓶颈，可增加候选数并尝试 Swing、图召回或序列召回。
 - 当前 DIN 是候选感知注意力的简化实现，可继续尝试 DIEN、BST 或 SASRec。
 - 可以增加时间窗口切分和多折验证，降低单次留出验证的方差。

@@ -10,6 +10,7 @@ from tianchi_rec.config import DATA_DIR, OFFLINE_DIR, ONLINE_DIR, env_path
 from tianchi_rec.features import builder as feature_builder
 from tianchi_rec.features import candidates as candidate_ops
 from tianchi_rec.features import data as feature_data
+from tianchi_rec.features import recall_sources
 from tianchi_rec.features import user as user_features
 
 try:
@@ -76,6 +77,15 @@ FORCE_REBUILD_FEATURES = os.environ.get(
     'FORCE_REBUILD_FEATURES',
     '1' if OFFLINE else '0',
 ) == '1'
+ENABLE_RECALL_SOURCE_FEATURES = (
+    os.environ.get('ENABLE_RECALL_SOURCE_FEATURES', '1') == '1'
+    and USE_MULTI_RECALL
+)
+NEGATIVE_SAMPLE_RATE = float(os.environ.get('NEGATIVE_SAMPLE_RATE', '0.05'))
+NEGATIVE_SAMPLE_MAX_PER_GROUP = int(
+    os.environ.get('NEGATIVE_SAMPLE_MAX_PER_GROUP', '5')
+)
+PIPELINE_CONFIG_FINGERPRINT = os.environ.get('PIPELINE_CONFIG_FINGERPRINT', '')
 
 # all_click_df指的是训练集
 # sample_user_nums 采样作为验证集的用户数量
@@ -102,6 +112,10 @@ click_trn, click_val, click_tst, val_ans = feature_data.load_click_splits(
     offline=OFFLINE,
     valid_user_count=VALID_USER_NUMS,
 )
+if OFFLINE and val_ans is not None:
+    val_ans[['user_id', 'click_article_id']].to_csv(
+        result_dir / 'validation_answers.csv', index=False
+    )
 
 click_trn_hist, click_trn_last = feature_data.get_hist_and_last_click(click_trn)
 
@@ -125,18 +139,54 @@ missing_tst_users = set(click_tst_hist['user_id'].unique()) - set(recall_list_di
 if missing_tst_users:
     print(f'提示：当前召回结果缺少 {len(missing_tst_users)} 个测试用户。'
           f'这通常说明 Recall.py 是 metric_recall=True 的线下模式，本次将只生成已有召回用户的特征。')
-# 将召回数据转换成df
-recall_list_df = candidate_ops.recall_dict_to_frame(recall_list_dict)
-
-# 给训练验证数据打标签，并负采样（这一部分时间比较久）
-trn_user_item_label_df, val_user_item_label_df, tst_user_item_label_df = candidate_ops.build_labeled_candidates(
-    recall_list_df,
-    click_trn_hist,
-    click_val_hist,
-    click_tst_hist,
+# 直接按用户拆分并对训练负样本采样；不先物化 20 万 × Top150 的全候选表。
+trn_user_item_label_df, val_user_item_label_df, tst_user_item_label_df = candidate_ops.build_labeled_candidates_from_recall(
+    recall_list_dict,
+    click_trn_hist['user_id'].unique(),
+    click_val_hist['user_id'].unique() if click_val_hist is not None else None,
+    click_tst_hist['user_id'].unique(),
     click_trn_last,
     click_val_last,
+    negative_sample_rate=NEGATIVE_SAMPLE_RATE,
+    negative_sample_max_per_group=NEGATIVE_SAMPLE_MAX_PER_GROUP,
 )
+
+for split_name, split_frame in (
+    ('train', trn_user_item_label_df),
+    ('validation', val_user_item_label_df),
+    ('test', tst_user_item_label_df),
+):
+    print(f'{split_name} candidate statistics: {candidate_ops.candidate_statistics(split_frame)}')
+
+if ENABLE_RECALL_SOURCE_FEATURES:
+    recall_source_metadata = feature_data.load_recall_source_metadata(result_dir)
+    recall_sources.validate_source_metadata(
+        recall_list_dict,
+        recall_source_metadata,
+        PIPELINE_CONFIG_FINGERPRINT or None,
+    )
+    trn_user_item_label_df = recall_sources.attach_candidate_source_features(
+        trn_user_item_label_df,
+        recall_list_dict,
+        recall_source_metadata,
+        expected_fingerprint=PIPELINE_CONFIG_FINGERPRINT or None,
+        validate_metadata=False,
+    )
+    if val_user_item_label_df is not None:
+        val_user_item_label_df = recall_sources.attach_candidate_source_features(
+            val_user_item_label_df,
+            recall_list_dict,
+            recall_source_metadata,
+            expected_fingerprint=PIPELINE_CONFIG_FINGERPRINT or None,
+            validate_metadata=False,
+        )
+    tst_user_item_label_df = recall_sources.attach_candidate_source_features(
+        tst_user_item_label_df,
+        recall_list_dict,
+        recall_source_metadata,
+        expected_fingerprint=PIPELINE_CONFIG_FINGERPRINT or None,
+        validate_metadata=False,
+    )
 
 trn_user_item_label_df.label
 
@@ -177,12 +227,20 @@ else:
         trn_user_item_label_tuples_dict.keys(), trn_user_item_label_tuples_dict,
         click_trn_hist, article_info_df, item_content_emb_dict,
     )
+    if ENABLE_RECALL_SOURCE_FEATURES:
+        trn_user_item_feats_df = recall_sources.merge_source_features(
+            trn_user_item_feats_df, trn_user_item_label_df
+        )
 
     if val_user_item_label_tuples_dict is not None:
         val_user_item_feats_df = feature_builder.create_candidate_features(
             val_user_item_label_tuples_dict.keys(), val_user_item_label_tuples_dict,
             click_val_hist, article_info_df, item_content_emb_dict,
         )
+        if ENABLE_RECALL_SOURCE_FEATURES:
+            val_user_item_feats_df = recall_sources.merge_source_features(
+                val_user_item_feats_df, val_user_item_label_df
+            )
     else:
         val_user_item_feats_df = None
         
@@ -190,6 +248,19 @@ else:
         tst_user_item_label_tuples_dict.keys(), tst_user_item_label_tuples_dict,
         click_tst_hist, article_info_df, item_content_emb_dict,
     )
+    if ENABLE_RECALL_SOURCE_FEATURES:
+        tst_user_item_feats_df = recall_sources.merge_source_features(
+            tst_user_item_feats_df, tst_user_item_label_df
+        )
+
+    if ENABLE_RECALL_SOURCE_FEATURES:
+        recall_sources.log_source_feature_summary(
+            trn_user_item_feats_df, 'train'
+        )
+        if val_user_item_feats_df is not None:
+            recall_sources.log_source_feature_summary(
+                val_user_item_feats_df, 'validation'
+            )
 
     # 保存一份省的每次都要重新跑，每次跑的时间都比较长
     trn_user_item_feats_df.to_csv(trn_feats_path, index=False)

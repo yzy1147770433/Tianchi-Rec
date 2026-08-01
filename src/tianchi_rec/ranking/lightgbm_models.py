@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 
 def _save_booster(booster, path, num_iteration=None):
@@ -23,6 +24,34 @@ def _sort_for_ranker(df):
     return sorted_df, groups
 
 
+def _validate_rank_groups(sorted_df, groups, name):
+    if int(groups.sum()) != len(sorted_df):
+        raise AssertionError(f'{name} LambdaRank groups do not sum to row count.')
+    positive_by_user = sorted_df.groupby('user_id', sort=False)['label'].max()
+    all_negative = int((positive_by_user == 0).sum())
+    print(
+        f'{name} LambdaRank groups: {len(groups)}; rows: {len(sorted_df)}; '
+        f'all-negative groups retained: {all_negative}'
+    )
+
+
+def _save_feature_importance(model, feature_columns, output_dir, prefix):
+    output_dir = Path(output_dir)
+    for importance_type in ('gain', 'split'):
+        frame = pd.DataFrame({
+            'feature': feature_columns,
+            'importance': model.booster_.feature_importance(
+                importance_type=importance_type
+            ),
+        }).sort_values(
+            ['importance', 'feature'], ascending=[False, True], kind='mergesort'
+        )
+        frame.to_csv(
+            output_dir / f'{prefix}_feature_importance_{importance_type}.csv',
+            index=False,
+        )
+
+
 def train_ranker(
     train_df,
     predict_df,
@@ -36,6 +65,7 @@ def train_ranker(
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError('LightGBM is required for ranking.') from exc
     train_sorted, train_groups = _sort_for_ranker(train_df)
+    _validate_rank_groups(train_sorted, train_groups, 'train')
     model = lgb.LGBMRanker(
         objective='lambdarank',
         metric='ndcg',
@@ -54,6 +84,7 @@ def train_ranker(
     fit_kwargs = {}
     if mode == 'validate':
         predict_sorted, predict_groups = _sort_for_ranker(predict_df)
+        _validate_rank_groups(predict_sorted, predict_groups, 'validation')
         fit_kwargs = {
             'eval_set': [(predict_sorted[feature_columns], predict_sorted['label'])],
             'eval_group': [predict_groups],
@@ -71,6 +102,9 @@ def train_ranker(
         model.booster_,
         output_dir / f'lgb_ranker_{mode}.txt',
         model.best_iteration_,
+    )
+    _save_feature_importance(
+        model, feature_columns, output_dir, 'ranker'
     )
     return model.predict(
         predict_df[feature_columns],
@@ -94,6 +128,7 @@ def train_classifier(
     negatives = max(int((train_df['label'] == 0).sum()), 1)
     model = lgb.LGBMClassifier(
         objective='binary',
+        metric='auc',
         boosting_type='gbdt',
         num_leaves=int(os.environ.get('LGB_NUM_LEAVES', '63')),
         learning_rate=float(os.environ.get('LGB_LEARNING_RATE', '0.03')),
@@ -112,7 +147,10 @@ def train_classifier(
         fit_kwargs = {
             'eval_set': [(predict_df[feature_columns], predict_df['label'])],
             'eval_metric': 'auc',
-            'callbacks': [lgb.early_stopping(60), lgb.log_evaluation(25)],
+            'callbacks': [
+                lgb.early_stopping(60, first_metric_only=True),
+                lgb.log_evaluation(25),
+            ],
         }
     model.fit(train_df[feature_columns], train_df['label'], **fit_kwargs)
     output_dir = Path(output_dir)
@@ -120,6 +158,9 @@ def train_classifier(
         model.booster_,
         output_dir / f'lgb_classifier_{mode}.txt',
         model.best_iteration_,
+    )
+    _save_feature_importance(
+        model, feature_columns, output_dir, 'classifier'
     )
     return model.predict_proba(
         predict_df[feature_columns],

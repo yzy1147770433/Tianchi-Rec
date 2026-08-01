@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pickle
+import shutil
 import sys
 from pathlib import Path
 
@@ -22,7 +24,11 @@ from tianchi_rec.config import (  # noqa: E402
     OFFLINE_DIR,
     RECALL_EVAL_CUTOFFS,
     recall_channel_weights,
+    resolve_recall_channels,
+    FEATURE_VERSION,
+    DATA_SPLIT_VERSION,
 )
+from tianchi_rec.artifacts import config_fingerprint, write_run_config  # noqa: E402
 from tianchi_rec.evaluation.recall_diagnostics import (  # noqa: E402
     answer_dict,
     evaluate_recall,
@@ -44,9 +50,12 @@ CHANNEL_FILES = {
 }
 
 
-def load_channels(result_dir: Path):
+def load_channels(result_dir: Path, selected_channels=None):
     channels = {}
+    selected = set(selected_channels or CHANNEL_FILES)
     for channel, filename in CHANNEL_FILES.items():
+        if channel not in selected:
+            continue
         path = result_dir / filename
         if not path.exists():
             print(f'警告：缺少通道产物 {channel}: {path}')
@@ -67,6 +76,11 @@ def parse_args():
         default='diagnostics',
     )
     parser.add_argument('--result-dir', type=Path, default=OFFLINE_DIR)
+    parser.add_argument('--output-dir', type=Path)
+    parser.add_argument(
+        '--recall-channels',
+        help='Comma-separated aliases/real keys; disabled pickle files are not loaded.',
+    )
     parser.add_argument('--recall-topk', type=int, default=DEFAULT_FINAL_RECALL_TOPK)
     parser.add_argument('--rrf-k', type=int, default=DEFAULT_RRF_K)
     parser.add_argument(
@@ -78,7 +92,17 @@ def parse_args():
         '--save-fused', action='store_true',
         help='显式覆盖 result-dir 下的最终融合结果和候选来源元数据。',
     )
+    parser.add_argument('--skip-diagnostics', action='store_true')
     return parser.parse_args()
+
+
+def link_or_copy(source: Path, destination: Path):
+    if not source.exists() or destination.exists():
+        return
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
 
 
 def main():
@@ -86,10 +110,14 @@ def main():
     if args.recall_topk <= 0 or args.rrf_k <= 0:
         raise ValueError('recall-topk and rrf-k must be positive.')
     args.result_dir.mkdir(parents=True, exist_ok=True)
-    channels = load_channels(args.result_dir)
+    output_dir = args.output_dir or args.result_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    selected_channels = resolve_recall_channels(args.recall_channels)
+    channels = load_channels(args.result_dir, selected_channels)
     _, last_click = split_history_last(load_clicks(DATA_DIR, offline=True))
     answers = answer_dict(last_click)
     weights = recall_channel_weights()
+    weights = {name: weights[name] for name in channels}
     if args.fusion_method == 'weighted_rrf':
         if args.save_fused:
             fused, metadata = weighted_rrf_fusion(
@@ -110,31 +138,51 @@ def main():
         )
         metadata = None
 
-    print_recall_metrics(
-        'ItemCF recall (shared answers/users)',
-        evaluate_recall(
-            channels[ITEMCF_CHANNEL], answers, RECALL_EVAL_CUTOFFS, answers.keys()
-        ),
-    )
-    print_recall_metrics(
-        f'{args.fusion_method} recall (shared answers/users)',
-        evaluate_recall(fused, answers, RECALL_EVAL_CUTOFFS, answers.keys()),
-    )
-    save_fusion_diagnostics(
-        channels, fused, answers, args.result_dir, users=answers.keys()
-    )
+    if not args.skip_diagnostics:
+        print_recall_metrics(
+            'ItemCF recall (shared answers/users)',
+            evaluate_recall(
+                channels[ITEMCF_CHANNEL], answers, RECALL_EVAL_CUTOFFS, answers.keys()
+            ),
+        )
+        print_recall_metrics(
+            f'{args.fusion_method} recall (shared answers/users)',
+            evaluate_recall(fused, answers, RECALL_EVAL_CUTOFFS, answers.keys()),
+        )
+        save_fusion_diagnostics(
+            channels, fused, answers, output_dir, users=answers.keys()
+        )
     if args.save_fused:
-        with (args.result_dir / 'final_recall_items_dict.pkl').open('wb') as file:
+        run_config = {
+            'pipeline_mode': 'offline_bootstrap_existing_channels',
+            'enabled_channels': list(channels),
+            'channel_weights': weights,
+            'fusion_method': args.fusion_method,
+            'rrf_k': args.rrf_k,
+            'final_recall_topk': args.recall_topk,
+            'feature_version': FEATURE_VERSION,
+            'data_split_version': DATA_SPLIT_VERSION,
+        }
+        if metadata is not None:
+            metadata['config_fingerprint'] = config_fingerprint(run_config)
+        with (output_dir / 'final_recall_items_dict.pkl').open('wb') as file:
             pickle.dump(fused, file, protocol=pickle.HIGHEST_PROTOCOL)
         if metadata is not None:
-            with (args.result_dir / 'final_recall_candidate_sources.pkl').open('wb') as file:
+            with (output_dir / 'final_recall_candidate_sources.pkl').open('wb') as file:
                 pickle.dump(metadata, file, protocol=pickle.HIGHEST_PROTOCOL)
+        for cache_name in (
+            'item_content_emb.pkl',
+            'item_youtube_emb.pkl',
+            'user_youtube_emb.pkl',
+        ):
+            link_or_copy(args.result_dir / cache_name, output_dir / cache_name)
+        write_run_config(output_dir, run_config)
     if args.experiment in {'ablation', 'all'}:
         run_recall_ablation(
             channels,
             weights,
             answers,
-            args.result_dir / 'recall_ablation_results.csv',
+            output_dir / 'recall_ablation_results.csv',
             topk=args.recall_topk,
             rrf_k=args.rrf_k,
             users=answers.keys(),
@@ -143,7 +191,7 @@ def main():
         search_rrf_weights(
             channels,
             answers,
-            args.result_dir / 'rrf_weight_search_results.csv',
+            output_dir / 'rrf_weight_search_results.csv',
             topk=args.recall_topk,
             rrf_k=args.rrf_k,
             users=answers.keys(),

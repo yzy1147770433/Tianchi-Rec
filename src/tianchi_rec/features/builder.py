@@ -34,7 +34,12 @@ def create_candidate_features(
         history_items = history_lookup.get(user_id, [])
         if not history_items:
             continue
-        for rank, (article_id, score, label) in enumerate(recall_list[user_id]):
+        for fallback_rank, candidate in enumerate(recall_list[user_id]):
+            if len(candidate) == 4:
+                article_id, score, label, rank = candidate
+            else:
+                article_id, score, label = candidate
+                rank = fallback_rank
             candidate_info = article_lookup.get(article_id)
             if candidate_info is None:
                 continue

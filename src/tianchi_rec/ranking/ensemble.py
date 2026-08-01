@@ -13,7 +13,7 @@ def normalized_scores(df, score_columns):
     return {column: per_user_normalize(df, column) for column in score_columns}
 
 
-def tune_weights(validation_df, score_columns, units=10):
+def tune_weights(validation_df, score_columns, units=10, expected_users=None):
     normalized = normalized_scores(validation_df, score_columns)
     best_score = -1.0
     best_weights = None
@@ -26,7 +26,12 @@ def tune_weights(validation_df, score_columns, units=10):
             blended += weight * normalized[column].to_numpy()
         candidate = validation_df[['user_id', 'label']].copy()
         candidate['ensemble_score'] = blended
-        score = ranking_metrics(candidate, 'ensemble_score', ks=(5,))['ndcg@5']
+        score = ranking_metrics(
+            candidate,
+            'ensemble_score',
+            ks=(5,),
+            expected_users=expected_users,
+        )['ndcg@5']
         if score > best_score:
             best_score = score
             best_weights = dict(zip(score_columns, map(float, weights)))

@@ -15,13 +15,14 @@ recall/
 ├── youtube_dnn.py     序列样本、双塔训练与向量召回
 ├── usercf.py          UserCF 与用户向量近邻
 ├── cold_start.py      新文章规则过滤
-└── fusion.py          多路分数归一化与融合
+└── fusion.py          Weighted RRF、旧分数融合与候选来源元数据
         │
         ▼
 features/
 ├── data.py            数据切分、缓存与召回结果加载
 ├── candidates.py      候选转换、标签和负采样
 ├── builder.py         用户—候选文章交叉特征
+├── recall_sources.py  召回来源元数据校验与排序特征
 └── user.py            用户、热度、设备和偏好特征
         │
         ▼

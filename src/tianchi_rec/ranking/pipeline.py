@@ -8,6 +8,7 @@ from tianchi_rec.evaluation import ranking_metrics
 from tianchi_rec.ranking import make_topk_submission
 from tianchi_rec.ranking import ensemble as ensemble_ops
 from tianchi_rec.ranking import lightgbm_models
+from tianchi_rec.features.recall_sources import RECALL_SOURCE_FEATURE_COLUMNS
 
 import numpy as np
 import pandas as pd
@@ -22,12 +23,22 @@ TEST_RESULT_DIR = env_path('RANK_TEST_RESULT_DIR', ONLINE_DIR)
 OUTPUT_DIR = env_path('RANK_OUTPUT_DIR', TEST_RESULT_DIR)
 
 ENABLE_DIN = os.environ.get('ENABLE_DIN', '0') == '1'
+RANK_MODELS = tuple(
+    name.strip()
+    for name in os.environ.get('RANK_MODELS', 'classifier').split(',')
+    if name.strip()
+)
+if not RANK_MODELS or set(RANK_MODELS) - {'ranker', 'classifier'}:
+    raise ValueError("RANK_MODELS must contain 'ranker' and/or 'classifier'.")
 GPU_ID = os.environ.get('CUDA_VISIBLE_DEVICES', '0')
 os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
 RANDOM_SEED = int(os.environ.get('RANDOM_SEED', '2026'))
 TOPK = int(os.environ.get('SUBMIT_TOPK', '5'))
+ENABLE_RECALL_SOURCE_FEATURES = (
+    os.environ.get('ENABLE_RECALL_SOURCE_FEATURES', '1') == '1'
+)
 
-FEATURE_COLUMNS = [
+BASE_FEATURE_COLUMNS = [
     'sim0', 'time_diff0', 'word_diff0', 'sim_max', 'sim_min',
     'sim_sum', 'sim_mean', 'score', 'rank', 'click_size',
     'time_diff_mean', 'active_level', 'click_environment',
@@ -36,6 +47,9 @@ FEATURE_COLUMNS = [
     'words_hbo', 'category_id', 'created_at_ts', 'words_count',
     'is_cat_hab',
 ]
+FEATURE_COLUMNS = BASE_FEATURE_COLUMNS + (
+    list(RECALL_SOURCE_FEATURE_COLUMNS) if ENABLE_RECALL_SOURCE_FEATURES else []
+)
 
 
 def resolve_directory(path):
@@ -108,10 +122,30 @@ def clean_features(train_df, other_df):
 def print_metrics(name, metrics):
     print(f'\n===== {name} =====')
     for key, value in metrics.items():
-        if key == 'users':
+        if key in {'users', 'candidate_hit_users'}:
             print(f'{key}: {value}')
         else:
             print(f'{key}: {value:.6f}')
+
+
+def validation_user_ids():
+    path = TRAIN_RESULT_DIR / 'validation_answers.csv'
+    if not path.exists():
+        raise FileNotFoundError(
+            f'Missing validation answers: {path}. Rebuild feature artifacts.'
+        )
+    return pd.read_csv(path, usecols=['user_id'])['user_id'].astype(np.int64).unique()
+
+
+def print_binary_metrics(name, labels, scores):
+    from sklearn.metrics import log_loss, roc_auc_score
+
+    labels = np.asarray(labels)
+    if len(np.unique(labels)) < 2:
+        print(f'{name} AUC/LogLoss unavailable: validation labels have one class.')
+        return
+    print(f'{name} AUC: {roc_auc_score(labels, scores):.6f}')
+    print(f'{name} LogLoss: {log_loss(labels, scores, labels=[0, 1]):.6f}')
 
 
 
@@ -153,6 +187,7 @@ def train_din(train_df, predict_df):
     embedding_dim = int(os.environ.get('DIN_EMBEDDING_DIM', '16'))
     batch_size = int(os.environ.get('DIN_BATCH_SIZE', '64'))
     epochs = int(os.environ.get('DIN_EPOCHS', '2'))
+    patience = int(os.environ.get('DIN_EARLY_STOPPING_PATIENCE', '1'))
     sparse_columns = [
         'user_id', 'click_article_id', 'category_id', 'click_environment',
         'click_deviceGroup', 'click_os', 'click_country', 'click_region',
@@ -261,9 +296,25 @@ def train_din(train_df, predict_df):
         output_shape=(max_len,),
         name='masked_attention',
     )([attention_score, history_input])
-    attention_weight = tf.keras.layers.Softmax(axis=1, name='attention_weight')(
+    raw_attention_weight = tf.keras.layers.Softmax(axis=1, name='raw_attention_weight')(
         masked_attention
     )
+    attention_weight = tf.keras.layers.Lambda(
+        lambda tensors: (
+            tensors[0] * tf.cast(tf.not_equal(tensors[1], 0), tensors[0].dtype)
+            / tf.maximum(
+                tf.reduce_sum(
+                    tensors[0]
+                    * tf.cast(tf.not_equal(tensors[1], 0), tensors[0].dtype),
+                    axis=1,
+                    keepdims=True,
+                ),
+                tf.cast(1e-8, tensors[0].dtype),
+            )
+        ),
+        output_shape=(max_len,),
+        name='attention_weight',
+    )([raw_attention_weight, history_input])
     history_interest = tf.keras.layers.Lambda(
         lambda tensors: tf.reduce_sum(
             tensors[0] * tf.expand_dims(tensors[1], axis=-1), axis=1
@@ -307,7 +358,7 @@ def train_din(train_df, predict_df):
     fit_kwargs = {}
     if MODE == 'validate':
         callbacks.append(tf.keras.callbacks.EarlyStopping(
-            monitor='val_auc', mode='max', patience=1, restore_best_weights=True
+            monitor='val_auc', mode='max', patience=patience, restore_best_weights=True
         ))
         fit_kwargs['validation_data'] = (x_predict, predict_work['label'].to_numpy())
     model.fit(
@@ -366,18 +417,39 @@ def main():
     np.random.seed(RANDOM_SEED)
     train_df, predict_df = load_datasets()
     train_df, predict_df = clean_features(train_df, predict_df)
+    (OUTPUT_DIR / 'feature_columns.json').write_text(
+        json.dumps(FEATURE_COLUMNS, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+    if list(train_df[FEATURE_COLUMNS].columns) != list(
+        predict_df[FEATURE_COLUMNS].columns
+    ):
+        raise AssertionError('Training and prediction feature columns differ.')
     print(f'Mode: {MODE}')
+    print(f'Feature count: {len(FEATURE_COLUMNS)}')
+    print('Feature columns:', FEATURE_COLUMNS)
     print(f'Train rows/users: {len(train_df)}/{train_df.user_id.nunique()}')
     print(f'Predict rows/users: {len(predict_df)}/{predict_df.user_id.nunique()}')
+    positives = int((train_df['label'] == 1).sum())
+    negatives = int((train_df['label'] == 0).sum())
+    print(
+        f'Train positives/negatives: {positives}/{negatives}; '
+        f'scale_pos_weight={negatives / max(positives, 1):.6f}'
+    )
 
     predict_df = predict_df.copy()
-    predict_df['ranker_score'] = lightgbm_models.train_ranker(
-        train_df, predict_df, FEATURE_COLUMNS, MODE, OUTPUT_DIR, RANDOM_SEED,
-    )
-    predict_df['classifier_score'] = lightgbm_models.train_classifier(
-        train_df, predict_df, FEATURE_COLUMNS, MODE, OUTPUT_DIR, RANDOM_SEED,
-    )
-    score_columns = ['ranker_score', 'classifier_score']
+    score_columns = []
+    # 优先完成成本较低且当前效果更稳的分类模型，再按需运行 LambdaRank/DIN。
+    if 'classifier' in RANK_MODELS:
+        predict_df['classifier_score'] = lightgbm_models.train_classifier(
+            train_df, predict_df, FEATURE_COLUMNS, MODE, OUTPUT_DIR, RANDOM_SEED,
+        )
+        score_columns.append('classifier_score')
+    if 'ranker' in RANK_MODELS:
+        predict_df['ranker_score'] = lightgbm_models.train_ranker(
+            train_df, predict_df, FEATURE_COLUMNS, MODE, OUTPUT_DIR, RANDOM_SEED,
+        )
+        score_columns.append('ranker_score')
     if ENABLE_DIN:
         predict_df['din_score'] = train_din(train_df, predict_df)
         score_columns.append('din_score')
@@ -390,10 +462,29 @@ def main():
         }).to_csv(OUTPUT_DIR / f'{column}_{MODE}.csv', index=False)
 
     if MODE == 'validate':
+        expected_users = validation_user_ids()
         for column in score_columns:
-            print_metrics(column, ranking_metrics(predict_df, column, ks=(5, 10)))
-        weights = ensemble_ops.tune_weights(predict_df, score_columns)
-        weights_path = TRAIN_RESULT_DIR / 'ensemble_weights.json'
+            print_metrics(
+                column,
+                ranking_metrics(
+                    predict_df,
+                    column,
+                    ks=(5, 10),
+                    expected_users=expected_users,
+                ),
+            )
+        if 'classifier_score' in predict_df:
+            print_binary_metrics(
+                'classifier_score',
+                predict_df['label'],
+                predict_df['classifier_score'],
+            )
+        if 'din_score' in predict_df:
+            print_binary_metrics('din_score', predict_df['label'], predict_df['din_score'])
+        weights = ensemble_ops.tune_weights(
+            predict_df, score_columns, expected_users=expected_users
+        )
+        weights_path = OUTPUT_DIR / 'ensemble_weights.json'
         weights_path.write_text(
             json.dumps(weights, ensure_ascii=False, indent=2),
             encoding='utf-8',
@@ -402,7 +493,15 @@ def main():
             predict_df, score_columns, weights,
         )
         print('Selected ensemble weights:', weights)
-        print_metrics('ensemble', ranking_metrics(predict_df, 'pred_score', ks=(5, 10)))
+        print_metrics(
+            'ensemble',
+            ranking_metrics(
+                predict_df,
+                'pred_score',
+                ks=(5, 10),
+                expected_users=expected_users,
+            ),
+        )
         print(f'Weights saved to: {weights_path}')
         return
 

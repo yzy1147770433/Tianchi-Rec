@@ -5,8 +5,8 @@ with environment variables. Relative overrides are resolved from the project
 root so every stage behaves the same regardless of the current directory.
 """
 
-import os
 import json
+import os
 from pathlib import Path
 
 
@@ -46,14 +46,34 @@ ITEMCF_CHANNEL = 'itemcf_sim_itemcf_recall'
 DEFAULT_RECALL_CHANNEL_WEIGHTS = {
     'itemcf_sim_itemcf_recall': 1.0,
     'embedding_sim_item_recall': 0.20,
-    'youtubednn_recall': 0.20,
     'youtubednn_usercf_recall': 0.20,
-    'cold_start_recall': 0.05,
+    'youtubednn_recall': 0.0,
+    'cold_start_recall': 0.0,
 }
+RECALL_CHANNEL_ALIASES = {
+    'itemcf': 'itemcf_sim_itemcf_recall',
+    'embedding': 'embedding_sim_item_recall',
+    'youtubednn': 'youtubednn_recall',
+    'youtubednn_usercf': 'youtubednn_usercf_recall',
+    'cold_start': 'cold_start_recall',
+}
+RECALL_PROFILES = {
+    'recommended_v2': (
+        'itemcf_sim_itemcf_recall',
+        'embedding_sim_item_recall',
+        'youtubednn_usercf_recall',
+    ),
+    'all_channels': RECALL_CHANNELS,
+    'itemcf_only': ('itemcf_sim_itemcf_recall',),
+}
+DEFAULT_RECALL_PROFILE = 'recommended_v2'
+DEFAULT_ENABLED_RECALL_CHANNELS = RECALL_PROFILES[DEFAULT_RECALL_PROFILE]
 DEFAULT_RECALL_FUSION_METHOD = 'weighted_rrf'
 DEFAULT_RRF_K = 60
-DEFAULT_FINAL_RECALL_TOPK = 200
+DEFAULT_FINAL_RECALL_TOPK = 150
 RECALL_EVAL_CUTOFFS = (10, 20, 30, 40, 50, 100, 150, 200)
+FEATURE_VERSION = 'recall_sources_v2'
+DATA_SPLIT_VERSION = 'user_holdout_last_click_seed42_v1'
 
 
 def recall_channel_weights():
@@ -68,3 +88,31 @@ def recall_channel_weights():
     if not isinstance(values, dict):
         raise ValueError('RECALL_CHANNEL_WEIGHTS must be a JSON object.')
     return {str(name): float(weight) for name, weight in values.items()}
+
+
+def resolve_recall_channels(raw=None, profile=None):
+    """把 CLI 别名或真实键名解析为去重后的真实召回通道元组。"""
+    selected_profile = profile or os.environ.get(
+        'RECALL_PROFILE', DEFAULT_RECALL_PROFILE
+    )
+    if raw is None:
+        raw = os.environ.get('ENABLED_RECALL_CHANNELS')
+    if raw:
+        requested = raw.split(',') if isinstance(raw, str) else list(raw)
+        channels = []
+        for name in requested:
+            normalized = str(name).strip()
+            channel = RECALL_CHANNEL_ALIASES.get(normalized, normalized)
+            if channel not in RECALL_CHANNELS:
+                raise ValueError(f'Unknown recall channel: {normalized!r}')
+            if channel not in channels:
+                channels.append(channel)
+        if not channels:
+            raise ValueError('At least one recall channel must be enabled.')
+        return tuple(channels)
+    if selected_profile not in RECALL_PROFILES:
+        raise ValueError(
+            f'Unknown recall profile {selected_profile!r}; '
+            f'available profiles: {sorted(RECALL_PROFILES)}'
+        )
+    return tuple(RECALL_PROFILES[selected_profile])

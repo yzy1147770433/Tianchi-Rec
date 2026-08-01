@@ -94,6 +94,16 @@ def load_recall_results(result_dir, recall_method='itemcf'):
         return pickle.load(file)
 
 
+def load_recall_source_metadata(result_dir):
+    path = Path(result_dir) / 'final_recall_candidate_sources.pkl'
+    if not path.exists():
+        raise FileNotFoundError(
+            f'Missing recall source metadata: {path}. Rebuild Weighted RRF recall.'
+        )
+    with path.open('rb') as file:
+        return pickle.load(file)
+
+
 def load_embedding_caches(result_dir):
     """Load available content, Word2Vec, item and user embedding caches."""
     result_dir = Path(result_dir)

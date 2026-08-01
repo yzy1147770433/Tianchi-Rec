@@ -165,7 +165,14 @@ def weighted_rrf_fusion(
     if unconfigured:
         LOGGER.warning('召回结果包含未配置权重的通道，将按 0 权重跳过: %s', unconfigured)
 
-    channel_names = tuple(name for name in recall_channels if name in weights)
+    zero_weight_channels = [
+        name for name in recall_channels if weights.get(name, 0.0) == 0.0
+    ]
+    if zero_weight_channels:
+        LOGGER.warning('权重为 0 的通道不参与候选生成: %s', zero_weight_channels)
+    channel_names = tuple(
+        name for name in recall_channels if weights.get(name, 0.0) > 0.0
+    )
     for name in channel_names:
         if not recall_channels.get(name):
             LOGGER.warning('召回通道 %s 没有生成任何结果，将安全跳过。', name)
@@ -181,16 +188,17 @@ def weighted_rrf_fusion(
     for user_id in sorted(user_ids, key=_stable_value_key):
         rrf_scores: dict[Any, float] = {}
         ranks_by_item: dict[Any, dict[str, int]] = {}
+        raw_scores_by_item: dict[Any, dict[str, float]] = {}
         for channel_name in channel_names:
             user_items = recall_channels.get(channel_name) or {}
             ranked_items = rank_recall_items(user_items.get(user_id, ()))
             weight = weights[channel_name]
-            for rank, (item_id, _) in enumerate(ranked_items, start=1):
+            for rank, (item_id, raw_score) in enumerate(ranked_items, start=1):
                 ranks_by_item.setdefault(item_id, {})[channel_name] = rank
-                if weight > 0:
-                    rrf_scores[item_id] = (
-                        rrf_scores.get(item_id, 0.0) + weight / (rrf_k + rank)
-                    )
+                raw_scores_by_item.setdefault(item_id, {})[channel_name] = raw_score
+                rrf_scores[item_id] = (
+                    rrf_scores.get(item_id, 0.0) + weight / (rrf_k + rank)
+                )
 
         def fused_key(pair: tuple[Any, float]) -> tuple[Any, ...]:
             item_id, score = pair
@@ -206,6 +214,7 @@ def weighted_rrf_fusion(
         final_results[user_id] = fused
         if return_metadata:
             rank_matrix = np.zeros((len(fused), len(channel_names)), dtype=np.uint16)
+            score_matrix = np.zeros((len(fused), len(channel_names)), dtype=np.float32)
             for row_index, (item_id, _) in enumerate(fused):
                 item_ranks = ranks_by_item[item_id]
                 for column_index, channel_name in enumerate(channel_names):
@@ -213,18 +222,24 @@ def weighted_rrf_fusion(
                     if rank > np.iinfo(np.uint16).max:
                         raise ValueError('Channel rank exceeds uint16 metadata capacity.')
                     rank_matrix[row_index, column_index] = rank
+                    score_matrix[row_index, column_index] = raw_scores_by_item[
+                        item_id
+                    ].get(channel_name, 0.0)
             metadata_users[user_id] = {
                 'rrf_scores': np.asarray([score for _, score in fused], dtype=np.float32),
                 'channel_ranks': rank_matrix,
+                'channel_scores': score_matrix,
             }
 
     if not return_metadata:
         return final_results
     metadata = {
-        'format_version': 1,
+        'format_version': 2,
         'fusion_method': 'weighted_rrf',
         'channel_names': channel_names,
         'rank_missing_value': 0,
+        'final_recall_topk': topk,
+        'rrf_k': rrf_k,
         'users': metadata_users,
     }
     return final_results, metadata
@@ -246,21 +261,67 @@ def candidate_source_frame(
         if user_meta is None:
             continue
         ranks = user_meta['channel_ranks']
+        channel_scores = user_meta.get(
+            'channel_scores', np.zeros_like(ranks, dtype=np.float32)
+        )
         scores = user_meta['rrf_scores']
         if len(items) != len(ranks):
             raise ValueError(f'Metadata is not aligned for user {user_id!r}.')
         for index, (item_id, _) in enumerate(items):
+            actual_ranks = ranks[index][ranks[index] > 0]
+            missing_rank = int(metadata.get('final_recall_topk', 200)) + 1
             row = {
                 'user_id': user_id,
                 'item_id': item_id,
                 'rrf_score': float(scores[index]),
                 'recall_channel_count': int(np.count_nonzero(ranks[index])),
+                'best_recall_rank': (
+                    float(actual_ranks.min()) if len(actual_ranks) else float(missing_rank)
+                ),
+                'mean_recall_rank': (
+                    float(actual_ranks.mean()) if len(actual_ranks) else float(missing_rank)
+                ),
             }
-            for channel_index, channel_name in enumerate(channel_names):
+            for channel_name, prefix in CHANNEL_FEATURE_PREFIX.items():
+                channel_index = (
+                    channel_names.index(channel_name)
+                    if channel_name in channel_names
+                    else None
+                )
+                raw_rank = (
+                    int(ranks[index, channel_index])
+                    if channel_index is not None
+                    else 0
+                )
+                raw_score = (
+                    float(channel_scores[index, channel_index])
+                    if channel_index is not None and raw_rank > 0
+                    else 0.0
+                )
                 prefix = CHANNEL_FEATURE_PREFIX.get(channel_name, channel_name)
-                rank = int(ranks[index, channel_index])
-                row[f'is_{prefix}_recalled'] = int(rank > 0)
-                row[f'{prefix}_rank'] = rank
+                row[f'is_{prefix}_recalled'] = int(raw_rank > 0)
+                row[f'{prefix}_score'] = raw_score
+                row[f'{prefix}_rank'] = raw_rank or missing_rank
+                row[f'{prefix}_reciprocal_rank'] = (
+                    1.0 / raw_rank if raw_rank > 0 else 0.0
+                )
+            row['is_multi_channel_recalled'] = int(
+                row['recall_channel_count'] >= 2
+            )
+            row['is_itemcf_embedding_both'] = int(
+                row['is_itemcf_recalled'] and row['is_embedding_recalled']
+            )
+            row['is_itemcf_usercf_both'] = int(
+                row['is_itemcf_recalled']
+                and row['is_youtubednn_usercf_recalled']
+            )
+            row['is_embedding_usercf_both'] = int(
+                row['is_embedding_recalled']
+                and row['is_youtubednn_usercf_recalled']
+            )
+            row['is_all_enabled_channels_recalled'] = int(
+                row['recall_channel_count'] == len(channel_names)
+            )
             rows.append(row)
     return pd.DataFrame(rows)
 
