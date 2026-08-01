@@ -18,6 +18,9 @@ if str(SRC_DIR) not in sys.path:
 
 from tianchi_rec.config import (
     DATA_DIR,
+    DEFAULT_FINAL_RECALL_TOPK,
+    DEFAULT_RECALL_FUSION_METHOD,
+    DEFAULT_RRF_K,
     LOG_DIR,
     OFFLINE_DIR,
     ONLINE_DIR,
@@ -90,11 +93,19 @@ def run_validation(args):
         'VALID_USER_NUMS': args.valid_users,
         'FINAL_RECALL_TOPK': args.recall_topk,
         'SINGLE_RECALL_TOPK': args.recall_topk,
+        'RECALL_FUSION_METHOD': args.fusion_method,
+        'RRF_K': args.rrf_k,
+        'RUN_RECALL_ABLATION': '1' if args.run_ablation else '0',
+        'RUN_RRF_WEIGHT_SEARCH': '1' if args.weight_search else '0',
     }
+    if args.channel_weights:
+        common['RECALL_CHANNEL_WEIGHTS'] = args.channel_weights
     run_step(
         '01_recall_offline', 'Recall.py', common,
         [recall_output(OFFLINE_DIR, args.recall)], args.resume,
     )
+    if args.recall_only:
+        return
     feature_env = {
         **common,
         'FORCE_REBUILD_FEATURES': '0' if args.resume else '1',
@@ -123,17 +134,18 @@ def run_validation(args):
 
 
 def run_final(args):
-    required_training = [
-        OFFLINE_DIR / 'trn_user_item_feats_df.csv',
-        OFFLINE_DIR / 'val_user_item_feats_df.csv',
-        OFFLINE_DIR / 'ensemble_weights.json',
-    ]
-    missing = [str(path) for path in required_training if not path.exists()]
-    if missing:
-        raise FileNotFoundError(
-            'Final mode requires offline validation artifacts first. '
-            f'Missing: {missing}. Run --mode validate or --mode all.'
-        )
+    if not args.recall_only:
+        required_training = [
+            OFFLINE_DIR / 'trn_user_item_feats_df.csv',
+            OFFLINE_DIR / 'val_user_item_feats_df.csv',
+            OFFLINE_DIR / 'ensemble_weights.json',
+        ]
+        missing = [str(path) for path in required_training if not path.exists()]
+        if missing:
+            raise FileNotFoundError(
+                'Final mode requires offline validation artifacts first. '
+                f'Missing: {missing}. Run --mode validate or --mode all.'
+            )
 
     common = {
         'OFFLINE_VALIDATION': '0',
@@ -141,11 +153,17 @@ def run_final(args):
         'RECALL_RESULT_DIR': ONLINE_DIR,
         'FINAL_RECALL_TOPK': args.recall_topk,
         'SINGLE_RECALL_TOPK': args.recall_topk,
+        'RECALL_FUSION_METHOD': args.fusion_method,
+        'RRF_K': args.rrf_k,
     }
+    if args.channel_weights:
+        common['RECALL_CHANNEL_WEIGHTS'] = args.channel_weights
     run_step(
         '04_recall_online', 'Recall.py', common,
         [recall_output(ONLINE_DIR, args.recall)], args.resume,
     )
+    if args.recall_only:
+        return
     feature_env = {
         **common,
         'FORCE_REBUILD_FEATURES': '0' if args.resume else '1',
@@ -172,10 +190,36 @@ def run_final(args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['validate', 'final', 'all'], default='all')
+    parser.add_argument(
+        '--mode', choices=['offline', 'validate', 'final', 'all'], default='all'
+    )
     parser.add_argument('--recall', choices=['itemcf', 'multi'], default='multi')
     parser.add_argument('--valid-users', type=int, default=20000)
-    parser.add_argument('--recall-topk', type=int, default=50)
+    parser.add_argument(
+        '--recall-topk', type=int, default=DEFAULT_FINAL_RECALL_TOPK
+    )
+    parser.add_argument(
+        '--fusion-method',
+        choices=['weighted_rrf', 'legacy_score_fusion'],
+        default=DEFAULT_RECALL_FUSION_METHOD,
+    )
+    parser.add_argument('--rrf-k', type=int, default=DEFAULT_RRF_K)
+    parser.add_argument(
+        '--channel-weights',
+        help='JSON object overriding configured channel weights.',
+    )
+    parser.add_argument(
+        '--recall-only', action='store_true',
+        help='Stop after recall evaluation/fusion without feature and rank stages.',
+    )
+    parser.add_argument(
+        '--run-ablation', action='store_true',
+        help='Run and save the A-I offline recall ablation table.',
+    )
+    parser.add_argument(
+        '--weight-search', action='store_true',
+        help='Run optional sequential offline RRF weight search.',
+    )
     parser.add_argument('--din', action='store_true', help='Train DIN in addition to LightGBM models.')
     parser.add_argument('--din-batch-size', type=int, default=64)
     parser.add_argument('--din-epochs', type=int, default=2)
@@ -186,16 +230,20 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.recall_topk <= 0:
+        raise ValueError('--recall-topk must be positive.')
+    if args.rrf_k <= 0:
+        raise ValueError('--rrf-k must be positive.')
     check_raw_data()
     OFFLINE_DIR.mkdir(parents=True, exist_ok=True)
     ONLINE_DIR.mkdir(parents=True, exist_ok=True)
     print(f'Python: {sys.executable}')
     print(f'Mode: {args.mode}; recall: {args.recall}; DIN: {args.din}')
-    if args.mode in {'validate', 'all'}:
+    if args.mode in {'offline', 'validate', 'all'}:
         run_validation(args)
     if args.mode in {'final', 'all'}:
         run_final(args)
-    if args.mode in {'final', 'all'}:
+    if args.mode in {'final', 'all'} and not args.recall_only:
         print(f'\nSubmission: {ONLINE_DIR / "tianchi_news_submission.csv"}')
     print('Pipeline completed successfully.')
 

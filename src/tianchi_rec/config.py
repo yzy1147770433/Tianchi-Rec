@@ -6,6 +6,7 @@ root so every stage behaves the same regardless of the current directory.
 """
 
 import os
+import json
 from pathlib import Path
 
 
@@ -31,3 +32,39 @@ REQUIRED_RAW_FILES = (
     'articles.csv',
     'articles_emb.csv',
 )
+
+
+# 召回通道名称以 Recall 阶段实际写入 ``user_multi_recall_dict`` 的键为准。
+RECALL_CHANNELS = (
+    'itemcf_sim_itemcf_recall',
+    'embedding_sim_item_recall',
+    'youtubednn_recall',
+    'youtubednn_usercf_recall',
+    'cold_start_recall',
+)
+ITEMCF_CHANNEL = 'itemcf_sim_itemcf_recall'
+DEFAULT_RECALL_CHANNEL_WEIGHTS = {
+    'itemcf_sim_itemcf_recall': 1.0,
+    'embedding_sim_item_recall': 0.20,
+    'youtubednn_recall': 0.20,
+    'youtubednn_usercf_recall': 0.20,
+    'cold_start_recall': 0.05,
+}
+DEFAULT_RECALL_FUSION_METHOD = 'weighted_rrf'
+DEFAULT_RRF_K = 60
+DEFAULT_FINAL_RECALL_TOPK = 200
+RECALL_EVAL_CUTOFFS = (10, 20, 30, 40, 50, 100, 150, 200)
+
+
+def recall_channel_weights():
+    """读取可选的 JSON 通道权重覆盖，不在融合函数内部写死权重。"""
+    raw = os.environ.get('RECALL_CHANNEL_WEIGHTS')
+    if not raw:
+        return DEFAULT_RECALL_CHANNEL_WEIGHTS.copy()
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError('RECALL_CHANNEL_WEIGHTS must be a JSON object.') from exc
+    if not isinstance(values, dict):
+        raise ValueError('RECALL_CHANNEL_WEIGHTS must be a JSON object.')
+    return {str(name): float(weight) for name, weight in values.items()}

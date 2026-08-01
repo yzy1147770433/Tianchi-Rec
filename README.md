@@ -33,7 +33,7 @@
                     │
           按用户归一化、融合、去重
                     │
-             每个用户 Top 50
+             每个用户 Top 200
                     ▼
              用户—文章特征工程
                     │
@@ -192,10 +192,16 @@ python run_pipeline.py --mode all --recall multi --din --gpu 0 --resume
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
-| `--mode` | `all` | `validate`、`final` 或完整流程 `all` |
+| `--mode` | `all` | `offline`/`validate`、`final` 或完整流程 `all` |
 | `--recall` | `multi` | `itemcf` 或 `multi` |
 | `--valid-users` | `20000` | 线下验证用户数 |
-| `--recall-topk` | `50` | 精排前每个用户保留的候选数 |
+| `--recall-topk` | `200` | 精排前每个用户保留的融合候选数 |
+| `--fusion-method` | `weighted_rrf` | `weighted_rrf` 或旧版 `legacy_score_fusion` |
+| `--rrf-k` | `60` | RRF 排名平滑常数 |
+| `--channel-weights` | 配置默认值 | JSON 格式的通道权重覆盖 |
+| `--recall-only` | 关闭 | 只运行召回、评估与诊断，不运行特征和排序 |
+| `--run-ablation` | 关闭 | 保存 A-I 召回消融结果 |
+| `--weight-search` | 关闭 | 逐通道搜索 RRF 权重（不覆盖默认配置） |
 | `--din` | 关闭 | 是否训练 DIN |
 | `--din-batch-size` | `64` | DIN batch size，显存不足时可改为 32 |
 | `--din-epochs` | `2` | DIN 训练轮数 |
@@ -228,6 +234,35 @@ python run_pipeline.py --mode all --recall multi --din --gpu 0 --resume
 4. **Embedding UserCF**：使用 YouTubeDNN 用户向量检索相似用户，再扩展相似用户点击过的文章。
 5. **冷启动召回**：结合用户历史类别、平均字数和文章新鲜度筛选未出现在点击日志中的文章。
 
+五路融合默认使用 Weighted Reciprocal Rank Fusion：每路先按原始分数降序、去重，
+再为候选累计 `channel_weight / (rrf_k + rank)`。默认权重在
+`src/tianchi_rec/config.py` 中统一维护：ItemCF 为 `1.0`，Embedding、YouTubeDNN、
+YouTubeDNN UserCF 均为 `0.20`，Cold Start 为 `0.05`。旧 Min-Max 等权融合仍可通过
+`--fusion-method legacy_score_fusion` 运行。
+
+召回阶段会保存兼容旧流水线的 `final_recall_items_dict.pkl`。Weighted RRF 还会保存
+`final_recall_candidate_sources.pkl`，其中包含与最终候选顺序对齐的各通道排名，可展开为
+`rrf_score`、通道数、来源标记和各路 rank 特征。
+
+常用离线命令：
+
+```bash
+# ItemCF（与多路融合使用同一逐用户最后点击答案集）
+python run_pipeline.py --mode offline --recall itemcf --recall-topk 200 --recall-only
+
+# 旧 Min-Max 等权融合
+python run_pipeline.py --mode offline --recall multi --fusion-method legacy_score_fusion --recall-topk 200 --recall-only
+
+# Weighted RRF
+python run_pipeline.py --mode offline --recall multi --fusion-method weighted_rrf --recall-topk 200 --rrf-k 60 --recall-only
+
+# 基于已有五路 pickle 产物运行消融，避免重新训练 YouTubeDNN
+python run_recall_experiments.py --experiment ablation --recall-topk 200 --rrf-k 60
+
+# 可选逐通道权重搜索
+python run_recall_experiments.py --experiment weight-search --recall-topk 200 --rrf-k 60
+```
+
 ### 排序特征
 
 - 候选文章与最近点击文章的内容相似度
@@ -247,8 +282,8 @@ python run_pipeline.py --mode all --recall multi --din --gpu 0 --resume
 
 ## 已知限制与后续方向
 
-- 当前多路召回使用等权融合，可以基于线下指标学习召回权重或设置通道配额。
-- 可将每路召回分数、排名和来源作为独立精排特征，避免融合阶段丢失信息。
+- Weighted RRF 仍不保证 RRF@50 一定高于 ItemCF@50；召回池默认扩大到 200，精排负责最终 Top 5。
+- 可将已保存的每路排名和来源元数据接入精排；当前主接口仍保持 `(item_id, score)` 兼容格式。
 - 召回覆盖率仍是主要瓶颈，可增加候选数并尝试 Swing、图召回或序列召回。
 - 当前 DIN 是候选感知注意力的简化实现，可继续尝试 DIEN、BST 或 SASRec。
 - 可以增加时间窗口切分和多折验证，降低单次留出验证的方差。

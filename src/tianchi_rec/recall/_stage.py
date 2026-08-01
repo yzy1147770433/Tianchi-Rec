@@ -5,14 +5,34 @@ import os, warnings, pickle
 import collections
 warnings.filterwarnings('ignore')
 from pathlib import Path
-from tianchi_rec.config import DATA_DIR, OFFLINE_DIR, ONLINE_DIR, env_path
+from tianchi_rec.config import (
+    DATA_DIR,
+    DEFAULT_FINAL_RECALL_TOPK,
+    DEFAULT_RECALL_FUSION_METHOD,
+    DEFAULT_RRF_K,
+    ITEMCF_CHANNEL,
+    OFFLINE_DIR,
+    ONLINE_DIR,
+    RECALL_CHANNELS,
+    RECALL_EVAL_CUTOFFS,
+    env_path,
+    recall_channel_weights,
+)
+from tianchi_rec.evaluation.recall_diagnostics import (
+    answer_dict,
+    evaluate_recall,
+    print_recall_metrics,
+    run_recall_ablation,
+    save_fusion_diagnostics,
+    search_rrf_weights,
+)
 from tianchi_rec.recall import cold_start as cold_start_algo
 from tianchi_rec.recall import common as recall_common
 from tianchi_rec.recall import content as content_algo
 from tianchi_rec.recall import itemcf as itemcf_algo
 from tianchi_rec.recall import usercf as usercf_algo
 from tianchi_rec.recall import youtube_dnn as youtube_algo
-from tianchi_rec.recall import combine_recall_results as combine_recall_channels
+from tianchi_rec.recall import legacy_score_fusion, weighted_rrf_fusion
 
 
 np.random.seed(42)
@@ -23,7 +43,19 @@ if RECALL_METHOD not in {'itemcf', 'multi'}:
     raise ValueError("RECALL_METHOD must be either 'itemcf' or 'multi'.")
 ITEMCF_SIM_TOPK = int(os.environ.get('ITEMCF_SIM_TOPK', '100'))
 SINGLE_RECALL_TOPK = int(os.environ.get('SINGLE_RECALL_TOPK', '50'))
-FINAL_RECALL_TOPK = int(os.environ.get('FINAL_RECALL_TOPK', '50'))
+FINAL_RECALL_TOPK = int(os.environ.get(
+    'FINAL_RECALL_TOPK', str(DEFAULT_FINAL_RECALL_TOPK)
+))
+RECALL_FUSION_METHOD = os.environ.get(
+    'RECALL_FUSION_METHOD', DEFAULT_RECALL_FUSION_METHOD
+)
+if RECALL_FUSION_METHOD not in {'weighted_rrf', 'legacy_score_fusion'}:
+    raise ValueError(
+        "RECALL_FUSION_METHOD must be 'weighted_rrf' or 'legacy_score_fusion'."
+    )
+RRF_K = int(os.environ.get('RRF_K', str(DEFAULT_RRF_K)))
+RUN_RECALL_ABLATION = os.environ.get('RUN_RECALL_ABLATION', '0') == '1'
+RUN_RRF_WEIGHT_SEARCH = os.environ.get('RUN_RRF_WEIGHT_SEARCH', '0') == '1'
 
 data_path = DATA_DIR
 default_result_dir = OFFLINE_DIR if OFFLINE else ONLINE_DIR
@@ -107,11 +139,7 @@ else:
 item_type_dict, item_words_dict, item_created_time_dict = recall_common.item_metadata(item_info_df)
 
 # 定义一个多路召回的字典，将各路召回的结果都保存在这个字典当中
-user_multi_recall_dict =  {'itemcf_sim_itemcf_recall': {},
-                           'embedding_sim_item_recall': {},
-                           'youtubednn_recall': {},
-                           'youtubednn_usercf_recall': {}, 
-                           'cold_start_recall': {}}
+user_multi_recall_dict = {channel_name: {} for channel_name in RECALL_CHANNELS}
 
 
 # 提取最后一次点击作为召回评估，如果不需要做召回评估直接使用全量的训练集进行召回(线下验证模型)
@@ -125,21 +153,18 @@ else:
 
 #################################################################################################
 # 召回效果评估函数
-# 依次评估召回的前10, 20, 30, 40, 50个文章中的击中率
-def metrics_recall(user_recall_items_dict, trn_last_click_df, topk=5):
-    last_click_item_dict = dict(zip(trn_last_click_df['user_id'], trn_last_click_df['click_article_id']))
-    user_num = len(user_recall_items_dict)
-    
-    for k in range(10, topk+1, 10):
-        hit_num = 0
-        for user, item_list in user_recall_items_dict.items():
-            # 获取前k个召回的结果
-            tmp_recall_items = [x[0] for x in user_recall_items_dict[user][:k]]
-            if last_click_item_dict[user] in set(tmp_recall_items):
-                hit_num += 1
-        
-        hit_rate = round(hit_num * 1.0 / user_num, 5)
-        print(' topk: ', k, ' : ', 'hit_num: ', hit_num, 'hit_rate: ', hit_rate, 'user_num : ', user_num)
+# 固定同一答案用户集作为分母；候选不足某个 K 时自然按实际候选评估。
+def metrics_recall(user_recall_items_dict, trn_last_click_df, topk=5, name='recall'):
+    del topk  # 保留旧调用签名；评估点统一由配置定义。
+    answers = answer_dict(trn_last_click_df)
+    metrics = evaluate_recall(
+        user_recall_items_dict,
+        answers,
+        cutoffs=RECALL_EVAL_CUTOFFS,
+        users=answers.keys(),
+    )
+    print_recall_metrics(name, metrics)
+    return metrics
 
 
 #################################################################################################
@@ -197,7 +222,12 @@ if RECALL_METHOD == 'multi':
         user_multi_recall_dict['youtubednn_recall'] = youtube_algo.train_youtube_dnn_recall(
             trn_hist_click_df, save_path, topk=20,
         )
-        metrics_recall(user_multi_recall_dict['youtubednn_recall'], trn_last_click_df, topk=20)
+        metrics_recall(
+            user_multi_recall_dict['youtubednn_recall'],
+            trn_last_click_df,
+            topk=20,
+            name='YouTubeDNN recall',
+        )
 
 
 
@@ -233,7 +263,12 @@ pickle.dump(user_multi_recall_dict['itemcf_sim_itemcf_recall'], open(save_path /
 
 if metric_recall:
     # 召回效果评估
-    metrics_recall(user_multi_recall_dict['itemcf_sim_itemcf_recall'], trn_last_click_df, topk=recall_item_num)
+    metrics_recall(
+        user_multi_recall_dict['itemcf_sim_itemcf_recall'],
+        trn_last_click_df,
+        topk=recall_item_num,
+        name='ItemCF recall',
+    )
 
 if RECALL_METHOD == 'itemcf':
     print(f'ItemCF recall saved to: {save_path / "itemcf_recall_dict.pkl"}')
@@ -265,7 +300,12 @@ pickle.dump(user_multi_recall_dict['embedding_sim_item_recall'], open(save_path 
 
 if metric_recall:
     # 召回效果评估
-    metrics_recall(user_multi_recall_dict['embedding_sim_item_recall'], trn_last_click_df, topk=recall_item_num)
+    metrics_recall(
+        user_multi_recall_dict['embedding_sim_item_recall'],
+        trn_last_click_df,
+        topk=recall_item_num,
+        name='Embedding recall',
+    )
 
 
 
@@ -339,7 +379,12 @@ pickle.dump(user_multi_recall_dict['youtubednn_usercf_recall'], open(save_path /
 
 if metric_recall:
     # 召回效果评估
-    metrics_recall(user_multi_recall_dict['youtubednn_usercf_recall'], trn_last_click_df, topk=recall_item_num)
+    metrics_recall(
+        user_multi_recall_dict['youtubednn_usercf_recall'],
+        trn_last_click_df,
+        topk=recall_item_num,
+        name='YouTubeDNN UserCF recall',
+    )
 
 
 
@@ -396,39 +441,88 @@ pickle.dump(cold_start_user_items_dict, open(save_path / 'cold_start_user_items_
 
 user_multi_recall_dict['cold_start_recall'] = cold_start_user_items_dict
 
+if metric_recall:
+    metrics_recall(
+        user_multi_recall_dict['cold_start_recall'],
+        trn_last_click_df,
+        topk=FINAL_RECALL_TOPK,
+        name='Cold-start recall',
+    )
+
 
 
 #################################################################################################
 
-# 多路召回合并
-
-def combine_recall_results(user_multi_recall_dict, weight_dict=None, topk=25):
-    print('多路召回合并...')
-    final_recall_items_dict_rank = combine_recall_channels(
-        user_multi_recall_dict,
-        weights=weight_dict,
-        topk=topk,
-    )
-    pickle.dump(final_recall_items_dict_rank, open(os.path.join(save_path, 'final_recall_items_dict.pkl'),'wb'))
-    return final_recall_items_dict_rank
-
-
-
-# 这里直接对多路召回的权重给了一个相同的值，其实可以根据前面召回的情况来调整参数的值
-weight_dict = {'itemcf_sim_itemcf_recall': 1.0,
-               'embedding_sim_item_recall': 1.0,
-               'youtubednn_recall': 1.0,
-               'youtubednn_usercf_recall': 1.0, 
-               'cold_start_recall': 1.0}
-
-final_recall_items_dict = combine_recall_results(
-    user_multi_recall_dict,
-    weight_dict=weight_dict,
-    topk=FINAL_RECALL_TOPK,
+# 多路召回合并：默认 Weighted RRF，旧 Min-Max 等权方式保留为消融选项。
+channel_weights = recall_channel_weights()
+print(
+    f'多路召回合并: method={RECALL_FUSION_METHOD}, topk={FINAL_RECALL_TOPK}, '
+    f'rrf_k={RRF_K}, weights={channel_weights}'
 )
+if RECALL_FUSION_METHOD == 'weighted_rrf':
+    final_recall_items_dict, recall_source_metadata = weighted_rrf_fusion(
+        user_multi_recall_dict,
+        channel_weights=channel_weights,
+        topk=FINAL_RECALL_TOPK,
+        rrf_k=RRF_K,
+        return_metadata=True,
+        itemcf_channel=ITEMCF_CHANNEL,
+    )
+    with (save_path / 'final_recall_candidate_sources.pkl').open('wb') as file:
+        pickle.dump(recall_source_metadata, file, protocol=pickle.HIGHEST_PROTOCOL)
+else:
+    final_recall_items_dict = legacy_score_fusion(
+        user_multi_recall_dict,
+        channel_weights={name: 1.0 for name in user_multi_recall_dict},
+        topk=FINAL_RECALL_TOPK,
+    )
+    # 覆盖可能残留的 RRF 来源文件，避免下游把旧元数据与新候选错配。
+    with (save_path / 'final_recall_candidate_sources.pkl').open('wb') as file:
+        pickle.dump(
+            {
+                'format_version': 1,
+                'fusion_method': 'legacy_score_fusion',
+                'channel_names': tuple(user_multi_recall_dict),
+                'users': {},
+            },
+            file,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+
+with (save_path / 'final_recall_items_dict.pkl').open('wb') as file:
+    pickle.dump(final_recall_items_dict, file, protocol=pickle.HIGHEST_PROTOCOL)
+
 if metric_recall:
     metrics_recall(
         final_recall_items_dict,
         trn_last_click_df,
-        topk=20,
+        topk=FINAL_RECALL_TOPK,
+        name='Five-channel fused recall',
     )
+    offline_answers = answer_dict(trn_last_click_df)
+    save_fusion_diagnostics(
+        user_multi_recall_dict,
+        final_recall_items_dict,
+        offline_answers,
+        save_path,
+        users=offline_answers.keys(),
+    )
+    if RUN_RECALL_ABLATION:
+        run_recall_ablation(
+            user_multi_recall_dict,
+            channel_weights,
+            offline_answers,
+            save_path / 'recall_ablation_results.csv',
+            topk=FINAL_RECALL_TOPK,
+            rrf_k=RRF_K,
+            users=offline_answers.keys(),
+        )
+    if RUN_RRF_WEIGHT_SEARCH:
+        search_rrf_weights(
+            user_multi_recall_dict,
+            offline_answers,
+            save_path / 'rrf_weight_search_results.csv',
+            topk=FINAL_RECALL_TOPK,
+            rrf_k=RRF_K,
+            users=offline_answers.keys(),
+        )

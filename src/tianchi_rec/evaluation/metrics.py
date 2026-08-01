@@ -37,6 +37,7 @@ def ranking_metrics(df, score_col='pred_score', ks=(5, 10)):
     }
     for k in ks:
         hits = positive_ranks[positive_ranks <= k]
+        metrics[f'mrr@{k}'] = float((1.0 / hits).sum() / total_users)
         metrics[f'hit_rate@{k}'] = float(len(hits) / total_users)
         metrics[f'ndcg@{k}'] = float(
             (1.0 / np.log2(hits + 1)).sum() / total_users

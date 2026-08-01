@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tianchi_rec.config import RECALL_EVAL_CUTOFFS
+
 
 def load_clicks(data_dir, offline=True):
     data_dir = Path(data_dir)
@@ -75,15 +77,17 @@ def user_history_metadata(clicks_with_articles):
     return categories, item_ids, mean_words, last_created
 
 
-def recall_metrics(recall_results, last_click_df, cutoffs=(10, 20, 30, 40, 50)):
+def recall_metrics(recall_results, last_click_df, cutoffs=RECALL_EVAL_CUTOFFS):
+    """按答案用户数统一分母；召回缺失用户按未命中处理。"""
     answers = dict(zip(last_click_df['user_id'], last_click_df['click_article_id']))
-    user_count = len(recall_results)
+    user_count = len(answers)
     if user_count == 0:
         return {cutoff: 0.0 for cutoff in cutoffs}
     return {
         cutoff: sum(
-            answers.get(user_id) in {item for item, _ in items[:cutoff]}
-            for user_id, items in recall_results.items()
+            answers[user_id]
+            in {item for item, _ in recall_results.get(user_id, ())[:cutoff]}
+            for user_id in answers
         ) / user_count
         for cutoff in cutoffs
     }

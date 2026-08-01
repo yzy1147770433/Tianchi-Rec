@@ -100,6 +100,9 @@ def add_category_preference(feature_df):
     if feature_df is None:
         return None
     result = feature_df.copy()
+    if result.empty:
+        result['is_cat_hab'] = pd.Series(index=result.index, dtype=np.int8)
+        return result
     result['is_cat_hab'] = result.apply(
         lambda row: int(row['category_id'] in set(row['cate_list'])),
         axis=1,

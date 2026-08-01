@@ -52,7 +52,12 @@ python run_pipeline.py --mode validate --recall itemcf --valid-users 20000
 
 ## Important options
 
-- `--recall-topk 50`: candidate count before ranking.
+- `--recall-topk 200`: candidate count before ranking (default).
+- `--fusion-method weighted_rrf`: rank-only weighted fusion; use
+  `legacy_score_fusion` for the old Min-Max ablation.
+- `--rrf-k 60`: RRF rank-smoothing constant.
+- `--recall-only`: stop after recall evaluation and diagnostics.
+- `--run-ablation` / `--weight-search`: optional offline recall experiments.
 - `--din-batch-size 64`: reduce to 32 if GPU memory is insufficient.
 - `--din-epochs 2`: start with 1 for an environment check.
 - `--resume`: skip a stage only when all of that stage's expected files exist.

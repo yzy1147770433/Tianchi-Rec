@@ -25,6 +25,8 @@ class RankingMetricsTest(unittest.TestCase):
         self.assertEqual(metrics['users'], 3)
         self.assertAlmostEqual(metrics['recall_hit_rate'], 2 / 3)
         self.assertAlmostEqual(metrics['mrr'], 0.5)
+        self.assertAlmostEqual(metrics['mrr@1'], 1 / 3)
+        self.assertAlmostEqual(metrics['mrr@2'], 0.5)
         self.assertAlmostEqual(metrics['hit_rate@1'], 1 / 3)
         self.assertAlmostEqual(
             metrics['ndcg@2'],

@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,10 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from tianchi_rec.features.builder import create_candidate_features
 from tianchi_rec.features.candidates import label_candidates, recall_dict_to_frame
-from tianchi_rec.features.user import build_user_features
+from tianchi_rec.features.user import add_category_preference, build_user_features
 from tianchi_rec.recall.common import user_item_time
 from tianchi_rec.recall.itemcf import item_similarity, recommend_items
 from tianchi_rec.recall.youtube_dnn import generate_sequence_examples
+from tianchi_rec.ranking.lightgbm_models import _save_booster
 
 
 class RecallAlgorithmModuleTest(unittest.TestCase):
@@ -104,6 +106,32 @@ class FeatureAlgorithmModuleTest(unittest.TestCase):
             'click_size', 'time_diff_mean', 'active_level',
             'user_time_hob1', 'cate_list', 'words_hbo'
         }.issubset(user_features.columns))
+
+    def test_category_preference_accepts_empty_candidate_table(self):
+        candidates = pd.DataFrame(columns=['category_id', 'cate_list'])
+
+        features = add_category_preference(candidates)
+
+        self.assertTrue(features.empty)
+        self.assertIn('is_cat_hab', features.columns)
+        self.assertEqual(features['is_cat_hab'].dtype, np.dtype('int8'))
+
+
+class RankingAlgorithmModuleTest(unittest.TestCase):
+    def test_booster_can_be_saved_to_unicode_path(self):
+        class FakeBooster:
+            def model_to_string(self, num_iteration=-1):
+                return f'model iteration={num_iteration}'
+
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / '模型目录' / '排序模型.txt'
+
+            _save_booster(FakeBooster(), model_path, num_iteration=3)
+
+            self.assertEqual(
+                model_path.read_text(encoding='utf-8'),
+                'model iteration=3',
+            )
 
 
 if __name__ == '__main__':

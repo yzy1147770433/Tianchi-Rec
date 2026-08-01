@@ -6,6 +6,17 @@ from pathlib import Path
 import numpy as np
 
 
+def _save_booster(booster, path, num_iteration=None):
+    """Persist a booster through Python so Unicode Windows paths work."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    iteration = num_iteration if num_iteration and num_iteration > 0 else -1
+    path.write_text(
+        booster.model_to_string(num_iteration=iteration),
+        encoding='utf-8',
+    )
+
+
 def _sort_for_ranker(df):
     sorted_df = df.sort_values(['user_id', 'click_article_id']).reset_index(drop=True)
     groups = sorted_df.groupby('user_id', sort=False).size().to_numpy()
@@ -56,7 +67,11 @@ def train_ranker(
         **fit_kwargs,
     )
     output_dir = Path(output_dir)
-    model.booster_.save_model(str(output_dir / f'lgb_ranker_{mode}.txt'))
+    _save_booster(
+        model.booster_,
+        output_dir / f'lgb_ranker_{mode}.txt',
+        model.best_iteration_,
+    )
     return model.predict(
         predict_df[feature_columns],
         num_iteration=model.best_iteration_,
@@ -101,7 +116,11 @@ def train_classifier(
         }
     model.fit(train_df[feature_columns], train_df['label'], **fit_kwargs)
     output_dir = Path(output_dir)
-    model.booster_.save_model(str(output_dir / f'lgb_classifier_{mode}.txt'))
+    _save_booster(
+        model.booster_,
+        output_dir / f'lgb_classifier_{mode}.txt',
+        model.best_iteration_,
+    )
     return model.predict_proba(
         predict_df[feature_columns],
         num_iteration=model.best_iteration_,
