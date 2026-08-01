@@ -13,7 +13,7 @@ SRC_DIR = ROOT / 'src'
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from tianchi_rec.legacy import run_feature_pipeline
+from tianchi_rec.stages import run_feature_pipeline
 
 
 def main():

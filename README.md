@@ -64,10 +64,11 @@
 ├── pyproject.toml           # 包元数据、可选依赖和命令行入口
 ├── src/tianchi_rec/
 │   ├── config.py            # 数据、产物和日志的统一路径配置
-│   ├── evaluation/          # 排名评估指标
-│   ├── recall/              # 可复用的召回融合逻辑
-│   ├── ranking/             # 分数处理与提交构造
-│   └── _legacy/             # 待第三阶段继续拆分的算法流水线
+│   ├── evaluation/          # HitRate、MRR、NDCG 等排名指标
+│   ├── recall/              # ItemCF、内容、UserCF、YouTubeDNN、冷启动与融合
+│   ├── features/            # 数据切分、候选标注、候选/用户特征
+│   ├── ranking/             # LightGBM、DIN、模型融合与提交构造
+│   └── stages.py            # 召回和特征阶段的延迟执行入口
 ├── tests/                   # 不依赖完整比赛数据的单元测试
 ├── data/
 │   ├── README.md            # 数据下载与放置说明
@@ -77,6 +78,7 @@
 │   └── online/              # 线上预测产物
 ├── logs/                    # 分阶段运行日志，不提交到 Git
 └── docs/
+    ├── architecture.md      # 模块职责与依赖关系
     └── pipeline.md          # 云端运行与参数说明
 ```
 

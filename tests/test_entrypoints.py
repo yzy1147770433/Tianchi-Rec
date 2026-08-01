@@ -18,9 +18,10 @@ class EntrypointTest(unittest.TestCase):
                 [
                     sys.executable,
                     '-c',
-                    'import Recall, tezhenggongcheng; '
+                    'import Recall, tezhenggongcheng, rank_final; '
                     'assert callable(Recall.main); '
-                    'assert callable(tezhenggongcheng.main)',
+                    'assert callable(tezhenggongcheng.main); '
+                    'assert callable(rank_final.main)',
                 ],
                 cwd=ROOT,
                 env=env,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tianchi-news-recommender"
-version = "0.2.0"
+version = "0.3.0"
 description = "Multi-recall and learning-to-rank pipeline for Tianchi news recommendation"
 readme = "README.md"
 requires-python = ">=3.10,<3.11"

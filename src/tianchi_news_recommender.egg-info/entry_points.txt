@@ -1,2 +1,0 @@
-[console_scripts]
-tianchi-rec = tianchi_rec.cli:main
