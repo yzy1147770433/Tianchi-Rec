@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tianchi-news-recommender"
+version = "0.2.0"
+description = "Multi-recall and learning-to-rank pipeline for Tianchi news recommendation"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "numpy==1.26.4",
+    "pandas==2.2.3",
+]
+
+[project.optional-dependencies]
+pipeline = [
+    "scikit-learn==1.5.2",
+    "lightgbm==4.5.0",
+    "tensorflow[and-cuda]==2.15.1",
+    "deepctr==0.9.4",
+    "deepmatch==0.3.2",
+    "faiss-cpu==1.8.0.post1",
+    "gensim==4.3.3",
+    "tqdm==4.67.1",
+]
+test = ["pytest>=8.3,<9"]
+
+[project.scripts]
+tianchi-rec = "tianchi_rec.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

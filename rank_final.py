@@ -2,9 +2,17 @@ import gc
 import itertools
 import json
 import os
+import sys
 from pathlib import Path
 
-from src.tianchi_rec.config import DATA_DIR, OFFLINE_DIR, ONLINE_DIR, PROJECT_ROOT, env_path
+ROOT = Path(__file__).resolve().parent
+SRC_DIR = ROOT / 'src'
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from tianchi_rec.config import DATA_DIR, OFFLINE_DIR, ONLINE_DIR, PROJECT_ROOT, env_path
+from tianchi_rec.evaluation import ranking_metrics
+from tianchi_rec.ranking import make_topk_submission, per_user_normalize
 
 import numpy as np
 import pandas as pd
@@ -111,32 +119,6 @@ def sort_for_ranker(df):
     return sorted_df, groups
 
 
-def ranking_metrics(df, score_col='pred_score', ks=(5, 10)):
-    ranked = df.sort_values(
-        ['user_id', score_col],
-        ascending=[True, False],
-    ).copy()
-    ranked['pred_rank'] = ranked.groupby('user_id').cumcount() + 1
-    total_users = ranked['user_id'].nunique()
-    positive_ranks = (
-        ranked[ranked['label'] == 1]
-        .groupby('user_id')['pred_rank']
-        .min()
-    )
-    metrics = {
-        'users': int(total_users),
-        'recall_hit_rate': float(len(positive_ranks) / total_users),
-        'mrr': float((1.0 / positive_ranks).sum() / total_users),
-    }
-    for k in ks:
-        hits = positive_ranks[positive_ranks <= k]
-        metrics[f'hit_rate@{k}'] = float(len(hits) / total_users)
-        metrics[f'ndcg@{k}'] = float(
-            (1.0 / np.log2(hits + 1)).sum() / total_users
-        )
-    return metrics
-
-
 def print_metrics(name, metrics):
     print(f'\n===== {name} =====')
     for key, value in metrics.items():
@@ -144,15 +126,6 @@ def print_metrics(name, metrics):
             print(f'{key}: {value}')
         else:
             print(f'{key}: {value:.6f}')
-
-
-def per_user_normalize(df, score_col):
-    score = df[score_col].astype(np.float64)
-    min_score = score.groupby(df['user_id']).transform('min')
-    max_score = score.groupby(df['user_id']).transform('max')
-    span = max_score - min_score
-    normalized = (score - min_score) / span.replace(0, np.nan)
-    return normalized.fillna(1.0).astype(np.float32)
 
 
 def train_ranker(train_df, predict_df):
@@ -500,41 +473,13 @@ def build_submission(prediction_df):
     )
     popular_items = train_click['click_article_id'].value_counts().index.astype(int).tolist()
 
-    sorted_prediction = prediction_df.sort_values(
-        ['user_id', 'pred_score'], ascending=[True, False]
+    submission = make_topk_submission(
+        prediction_df,
+        expected_users,
+        history,
+        popular_items,
+        topk=TOPK,
     )
-    recommendation_dict = (
-        sorted_prediction.groupby('user_id')['click_article_id']
-        .apply(lambda values: list(dict.fromkeys(map(int, values))))
-        .to_dict()
-    )
-    rows = []
-    for user_id in expected_users:
-        clicked = history.get(int(user_id), set())
-        recommendations = [
-            item for item in recommendation_dict.get(int(user_id), [])
-            if item not in clicked
-        ][:TOPK]
-        if len(recommendations) < TOPK:
-            for item in popular_items:
-                if item in clicked or item in recommendations:
-                    continue
-                recommendations.append(item)
-                if len(recommendations) == TOPK:
-                    break
-        if len(recommendations) != TOPK:
-            raise RuntimeError(f'Unable to produce {TOPK} items for user {user_id}.')
-        rows.append([int(user_id), *recommendations])
-
-    columns = ['user_id'] + [f'article_{index}' for index in range(1, TOPK + 1)]
-    submission = pd.DataFrame(rows, columns=columns)
-    if len(submission) != len(expected_users):
-        raise AssertionError('Submission user count does not match test users.')
-    if submission.isna().any().any():
-        raise AssertionError('Submission contains missing values.')
-    article_columns = columns[1:]
-    if not submission[article_columns].apply(lambda row: row.nunique() == TOPK, axis=1).all():
-        raise AssertionError('Submission contains duplicate recommendations for a user.')
     submission_path = OUTPUT_DIR / 'tianchi_news_submission.csv'
     submission.to_csv(submission_path, index=False)
     print(f'Final submission saved to: {submission_path}')

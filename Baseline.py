@@ -11,8 +11,15 @@ import pandas as pd
 import warnings
 from collections import defaultdict
 import collections
+import sys
 from pathlib import Path
-from src.tianchi_rec.config import DATA_DIR, LEGACY_DIR, env_path
+
+ROOT = Path(__file__).resolve().parent
+SRC_DIR = ROOT / 'src'
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from tianchi_rec.config import DATA_DIR, LEGACY_DIR, env_path
 warnings.filterwarnings('ignore')
 
 data_path = DATA_DIR

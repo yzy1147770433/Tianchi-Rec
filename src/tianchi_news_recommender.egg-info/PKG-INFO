@@ -1,3 +1,23 @@
+Metadata-Version: 2.4
+Name: tianchi-news-recommender
+Version: 0.2.0
+Summary: Multi-recall and learning-to-rank pipeline for Tianchi news recommendation
+Requires-Python: <3.11,>=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy==1.26.4
+Requires-Dist: pandas==2.2.3
+Provides-Extra: pipeline
+Requires-Dist: scikit-learn==1.5.2; extra == "pipeline"
+Requires-Dist: lightgbm==4.5.0; extra == "pipeline"
+Requires-Dist: tensorflow[and-cuda]==2.15.1; extra == "pipeline"
+Requires-Dist: deepctr==0.9.4; extra == "pipeline"
+Requires-Dist: deepmatch==0.3.2; extra == "pipeline"
+Requires-Dist: faiss-cpu==1.8.0.post1; extra == "pipeline"
+Requires-Dist: gensim==4.3.3; extra == "pipeline"
+Requires-Dist: tqdm==4.67.1; extra == "pipeline"
+Provides-Extra: test
+Requires-Dist: pytest<9,>=8.3; extra == "test"
+
 # 天池新闻推荐：多路召回与融合排序
 
 一个面向天池新闻推荐数据集的端到端推荐系统。项目采用工业界常见的两阶段架构：先通过多路召回从文章库中生成候选集，再使用 LightGBM 和 DIN 对候选文章精排，最终为每个测试用户输出 Top 5 新闻。
