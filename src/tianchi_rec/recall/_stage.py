@@ -8,6 +8,7 @@ from pathlib import Path
 from tianchi_rec.config import (
     DATA_DIR,
     DEFAULT_FINAL_RECALL_TOPK,
+    DEFAULT_RECALL_CHANNEL_TOPKS,
     DEFAULT_RECALL_FUSION_METHOD,
     DEFAULT_RRF_K,
     ITEMCF_CHANNEL,
@@ -44,6 +45,23 @@ if RECALL_METHOD not in {'itemcf', 'multi'}:
     raise ValueError("RECALL_METHOD must be either 'itemcf' or 'multi'.")
 ITEMCF_SIM_TOPK = int(os.environ.get('ITEMCF_SIM_TOPK', '100'))
 SINGLE_RECALL_TOPK = int(os.environ.get('SINGLE_RECALL_TOPK', '50'))
+ITEMCF_RECALL_TOPK = int(os.environ.get(
+    'ITEMCF_RECALL_TOPK', str(SINGLE_RECALL_TOPK)
+))
+EMBEDDING_RECALL_TOPK = int(os.environ.get(
+    'EMBEDDING_RECALL_TOPK', str(SINGLE_RECALL_TOPK)
+))
+YOUTUBEDNN_RECALL_TOPK = int(os.environ.get(
+    'YOUTUBEDNN_RECALL_TOPK',
+    str(DEFAULT_RECALL_CHANNEL_TOPKS['youtubednn_recall']),
+))
+YOUTUBEDNN_USERCF_RECALL_TOPK = int(os.environ.get(
+    'YOUTUBEDNN_USERCF_RECALL_TOPK', str(SINGLE_RECALL_TOPK)
+))
+COLD_START_RECALL_TOPK = int(os.environ.get(
+    'COLD_START_RECALL_TOPK',
+    str(DEFAULT_RECALL_CHANNEL_TOPKS['cold_start_recall']),
+))
 FINAL_RECALL_TOPK = int(os.environ.get(
     'FINAL_RECALL_TOPK', str(DEFAULT_FINAL_RECALL_TOPK)
 ))
@@ -64,6 +82,16 @@ ENABLED_RECALL_CHANNELS = (
     else resolve_recall_channels()
 )
 print(f'本次实际启用的召回通道: {ENABLED_RECALL_CHANNELS}')
+CHANNEL_TOPKS = {
+    'itemcf_sim_itemcf_recall': ITEMCF_RECALL_TOPK,
+    'embedding_sim_item_recall': EMBEDDING_RECALL_TOPK,
+    'youtubednn_recall': YOUTUBEDNN_RECALL_TOPK,
+    'youtubednn_usercf_recall': YOUTUBEDNN_USERCF_RECALL_TOPK,
+    'cold_start_recall': COLD_START_RECALL_TOPK,
+}
+if any(value <= 0 for value in CHANNEL_TOPKS.values()):
+    raise ValueError(f'每路召回 TopK 必须为正整数: {CHANNEL_TOPKS}')
+print(f'本次各通道召回深度: {CHANNEL_TOPKS}')
 
 data_path = DATA_DIR
 default_result_dir = OFFLINE_DIR if OFFLINE else ONLINE_DIR
@@ -227,12 +255,12 @@ need_youtube_embeddings = any(
 if RECALL_METHOD == 'multi' and need_youtube_embeddings:
     if not metric_recall:
         youtube_recall = youtube_algo.train_youtube_dnn_recall(
-            all_click_df, save_path, topk=20,
+            all_click_df, save_path, topk=YOUTUBEDNN_RECALL_TOPK,
         )
     else:
         trn_hist_click_df, trn_last_click_df = recall_common.split_history_last(all_click_df)
         youtube_recall = youtube_algo.train_youtube_dnn_recall(
-            trn_hist_click_df, save_path, topk=20,
+            trn_hist_click_df, save_path, topk=YOUTUBEDNN_RECALL_TOPK,
         )
     if 'youtubednn_recall' in ENABLED_RECALL_CHANNELS:
         user_multi_recall_dict['youtubednn_recall'] = youtube_recall
@@ -240,7 +268,7 @@ if RECALL_METHOD == 'multi' and need_youtube_embeddings:
         metrics_recall(
             user_multi_recall_dict['youtubednn_recall'],
             trn_last_click_df,
-            topk=20,
+            topk=YOUTUBEDNN_RECALL_TOPK,
             name='YouTubeDNN recall',
         )
 
@@ -264,7 +292,7 @@ i2i_sim = pickle.load(open(save_path / 'itemcf_i2i_sim.pkl', 'rb'))
 emb_i2i_sim = pickle.load(open(save_path / 'emb_i2i_sim.pkl', 'rb'))
 
 sim_item_topk = ITEMCF_SIM_TOPK
-recall_item_num = SINGLE_RECALL_TOPK
+recall_item_num = ITEMCF_RECALL_TOPK
 item_topk_click = recall_common.top_clicked_items(trn_hist_click_df, count=50)
 
 for user in tqdm(trn_hist_click_df['user_id'].unique()):
@@ -301,7 +329,7 @@ if 'embedding_sim_item_recall' in ENABLED_RECALL_CHANNELS:
     i2i_sim = pickle.load(open(save_path / 'emb_i2i_sim.pkl','rb'))
 
     sim_item_topk = ITEMCF_SIM_TOPK
-    recall_item_num = SINGLE_RECALL_TOPK
+    recall_item_num = EMBEDDING_RECALL_TOPK
     item_topk_click = recall_common.top_clicked_items(trn_hist_click_df, count=50)
     for user in tqdm(trn_hist_click_df['user_id'].unique()):
         user_recall_items_dict[user] = itemcf_algo.recommend_items(
@@ -376,7 +404,7 @@ if 'youtubednn_usercf_recall' in ENABLED_RECALL_CHANNELS:
     user_item_time_dict = recall_common.user_item_time(trn_hist_click_df)
     u2u_sim = pickle.load(open(save_path / 'youtube_u2u_sim.pkl', 'rb'))
     sim_user_topk = 20
-    recall_item_num = SINGLE_RECALL_TOPK
+    recall_item_num = YOUTUBEDNN_USERCF_RECALL_TOPK
     item_topk_click = recall_common.top_clicked_items(trn_hist_click_df, count=50)
     for user in tqdm(trn_hist_click_df['user_id'].unique()):
         user_recall_items_dict[user] = usercf_algo.recommend_from_users(
@@ -412,8 +440,8 @@ if 'cold_start_recall' in ENABLED_RECALL_CHANNELS:
     user_recall_items_dict = collections.defaultdict(dict)
     user_item_time_dict = recall_common.user_item_time(trn_hist_click_df)
     i2i_sim = pickle.load(open(save_path / 'emb_i2i_sim.pkl','rb'))
-    sim_item_topk = 150
-    recall_item_num = 100
+    sim_item_topk = max(150, COLD_START_RECALL_TOPK)
+    recall_item_num = COLD_START_RECALL_TOPK
     item_topk_click = recall_common.top_clicked_items(trn_hist_click_df, count=50)
     for user in tqdm(trn_hist_click_df['user_id'].unique()):
         user_recall_items_dict[user] = itemcf_algo.recommend_items(

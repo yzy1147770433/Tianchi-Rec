@@ -1,6 +1,7 @@
 import gc
 import json
 import os
+import time
 from pathlib import Path
 
 from tianchi_rec.config import DATA_DIR, OFFLINE_DIR, ONLINE_DIR, PROJECT_ROOT, env_path
@@ -170,7 +171,7 @@ def get_history_dict(mode):
     return train_history, test_history
 
 
-def train_din(train_df, predict_df):
+def train_din(train_df, predict_df, runtime_details=None):
     try:
         import tensorflow as tf
         from sklearn.preprocessing import MinMaxScaler
@@ -354,13 +355,24 @@ def train_din(train_df, predict_df):
         loss='binary_crossentropy',
         metrics=[tf.keras.metrics.AUC(name='auc')],
     )
-    callbacks = []
+    callbacks = [
+        tf.keras.callbacks.CSVLogger(str(OUTPUT_DIR / 'din_training_curve.csv')),
+    ]
     fit_kwargs = {}
     if MODE == 'validate':
-        callbacks.append(tf.keras.callbacks.EarlyStopping(
-            monitor='val_auc', mode='max', patience=patience, restore_best_weights=True
-        ))
+        callbacks.extend([
+            tf.keras.callbacks.ModelCheckpoint(
+                str(OUTPUT_DIR / 'din_best.weights.h5'),
+                monitor='val_auc', mode='max', save_best_only=True,
+                save_weights_only=True,
+            ),
+            tf.keras.callbacks.EarlyStopping(
+                monitor='val_auc', mode='max', patience=patience,
+                restore_best_weights=True,
+            ),
+        ])
         fit_kwargs['validation_data'] = (x_predict, predict_work['label'].to_numpy())
+    train_started = time.perf_counter()
     model.fit(
         x_train,
         train_work['label'].to_numpy(),
@@ -370,11 +382,20 @@ def train_din(train_df, predict_df):
         callbacks=callbacks,
         **fit_kwargs,
     )
+    training_seconds = time.perf_counter() - train_started
+    prediction_started = time.perf_counter()
     scores = model.predict(x_predict, batch_size=batch_size, verbose=1).reshape(-1)
+    prediction_seconds = time.perf_counter() - prediction_started
     model.save_weights(str(OUTPUT_DIR / f'din_{MODE}.weights.h5'))
     del model, x_train, x_predict, train_work, predict_work
     tf.keras.backend.clear_session()
     gc.collect()
+    if runtime_details is not None:
+        runtime_details['din'] = {
+            'training_seconds': training_seconds,
+            'prediction_seconds': prediction_seconds,
+            'total_seconds': training_seconds + prediction_seconds,
+        }
     return scores.astype(np.float32)
 
 
@@ -439,20 +460,47 @@ def main():
 
     predict_df = predict_df.copy()
     score_columns = []
+    runtime_details = {}
     # 优先完成成本较低且当前效果更稳的分类模型，再按需运行 LambdaRank/DIN。
     if 'classifier' in RANK_MODELS:
         predict_df['classifier_score'] = lightgbm_models.train_classifier(
             train_df, predict_df, FEATURE_COLUMNS, MODE, OUTPUT_DIR, RANDOM_SEED,
+            runtime_details,
         )
         score_columns.append('classifier_score')
     if 'ranker' in RANK_MODELS:
         predict_df['ranker_score'] = lightgbm_models.train_ranker(
             train_df, predict_df, FEATURE_COLUMNS, MODE, OUTPUT_DIR, RANDOM_SEED,
+            runtime_details,
         )
         score_columns.append('ranker_score')
     if ENABLE_DIN:
-        predict_df['din_score'] = train_din(train_df, predict_df)
+        predict_df['din_score'] = train_din(
+            train_df, predict_df, runtime_details
+        )
         score_columns.append('din_score')
+
+    try:
+        import resource
+        # Linux ru_maxrss 以 KiB 为单位；该值是进程生命周期峰值。
+        runtime_details['peak_memory_mb'] = (
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        )
+    except (ImportError, AttributeError):
+        runtime_details['peak_memory_mb'] = None
+    runtime_path = OUTPUT_DIR / 'ranking_runtime.json'
+    if runtime_path.exists():
+        existing_runtime = json.loads(runtime_path.read_text(encoding='utf-8'))
+        existing_peak = existing_runtime.get('peak_memory_mb')
+        current_peak = runtime_details.get('peak_memory_mb')
+        if existing_peak is not None and current_peak is not None:
+            runtime_details['peak_memory_mb'] = max(existing_peak, current_peak)
+        existing_runtime.update(runtime_details)
+        runtime_details = existing_runtime
+    runtime_path.write_text(
+        json.dumps(runtime_details, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
 
     for column in score_columns:
         pd.DataFrame({

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pickle
 from tqdm import tqdm
-import gc, os
+import gc, json, os
 import logging
 import time
 from pathlib import Path
@@ -85,6 +85,12 @@ NEGATIVE_SAMPLE_RATE = float(os.environ.get('NEGATIVE_SAMPLE_RATE', '0.05'))
 NEGATIVE_SAMPLE_MAX_PER_GROUP = int(
     os.environ.get('NEGATIVE_SAMPLE_MAX_PER_GROUP', '5')
 )
+NEGATIVE_SAMPLING_STRATEGY = os.environ.get(
+    'NEGATIVE_SAMPLING_STRATEGY', 'legacy_sampling'
+)
+HARD_NEGATIVE_RANDOM_COUNT = int(
+    os.environ.get('HARD_NEGATIVE_RANDOM_COUNT', '0')
+)
 PIPELINE_CONFIG_FINGERPRINT = os.environ.get('PIPELINE_CONFIG_FINGERPRINT', '')
 
 # all_click_df指的是训练集
@@ -149,14 +155,33 @@ trn_user_item_label_df, val_user_item_label_df, tst_user_item_label_df = candida
     click_val_last,
     negative_sample_rate=NEGATIVE_SAMPLE_RATE,
     negative_sample_max_per_group=NEGATIVE_SAMPLE_MAX_PER_GROUP,
+    negative_sampling_strategy=NEGATIVE_SAMPLING_STRATEGY,
+    hard_negative_random_count=HARD_NEGATIVE_RANDOM_COUNT,
 )
 
+candidate_stats = {}
 for split_name, split_frame in (
     ('train', trn_user_item_label_df),
     ('validation', val_user_item_label_df),
     ('test', tst_user_item_label_df),
 ):
-    print(f'{split_name} candidate statistics: {candidate_ops.candidate_statistics(split_frame)}')
+    candidate_stats[split_name] = candidate_ops.candidate_statistics(split_frame)
+    print(f'{split_name} candidate statistics: {candidate_stats[split_name]}')
+
+(result_dir / 'negative_sampling_report.json').write_text(
+    json.dumps(
+        {
+            'strategy': NEGATIVE_SAMPLING_STRATEGY,
+            'negative_sample_rate': NEGATIVE_SAMPLE_RATE,
+            'negative_sample_max_per_group': NEGATIVE_SAMPLE_MAX_PER_GROUP,
+            'hard_negative_random_count': HARD_NEGATIVE_RANDOM_COUNT,
+            'splits': candidate_stats,
+        },
+        ensure_ascii=False,
+        indent=2,
+    ),
+    encoding='utf-8',
+)
 
 if ENABLE_RECALL_SOURCE_FEATURES:
     recall_source_metadata = feature_data.load_recall_source_metadata(result_dir)

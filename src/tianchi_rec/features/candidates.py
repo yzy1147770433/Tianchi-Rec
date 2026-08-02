@@ -6,6 +6,21 @@ import numpy as np
 import pandas as pd
 
 
+NEGATIVE_SAMPLING_STRATEGIES = {
+    'legacy_sampling': None,
+    'hard_negative_20': 20,
+    'hard_negative_50': 50,
+}
+
+
+def _validate_sampling_strategy(strategy):
+    if strategy not in NEGATIVE_SAMPLING_STRATEGIES:
+        choices = ', '.join(sorted(NEGATIVE_SAMPLING_STRATEGIES))
+        raise ValueError(
+            f'Unknown negative sampling strategy {strategy!r}; expected one of: {choices}'
+        )
+
+
 def recall_dict_to_frame(recall_results):
     rows = [
         (user_id, item_id, score, rank)
@@ -110,8 +125,14 @@ def build_labeled_candidates_from_recall(
     negative_sample_rate=0.05,
     negative_sample_max_per_group=5,
     random_state=42,
+    negative_sampling_strategy='legacy_sampling',
+    hard_negative_random_count=0,
 ):
     """直接从召回字典构建拆分，避免先物化 20 万 × Top150 全量宽表。"""
+
+    _validate_sampling_strategy(negative_sampling_strategy)
+    if hard_negative_random_count < 0:
+        raise ValueError('hard_negative_random_count must be non-negative.')
 
     def answers_to_dict(frame):
         if frame is None:
@@ -154,13 +175,33 @@ def build_labeled_candidates_from_recall(
                     if item_id != answer
                 ]
                 if sample_negatives and negatives:
-                    sample_size = min(
-                        max(int(len(negatives) * negative_sample_rate), 1),
-                        negative_sample_max_per_group,
-                        len(negatives),
-                    )
                     rng = random.Random(random_state + user_id)
-                    negatives = rng.sample(negatives, sample_size)
+                    hard_count = NEGATIVE_SAMPLING_STRATEGIES[
+                        negative_sampling_strategy
+                    ]
+                    if hard_count is None:
+                        sample_size = min(
+                            max(int(len(negatives) * negative_sample_rate), 1),
+                            negative_sample_max_per_group,
+                            len(negatives),
+                        )
+                        negatives = rng.sample(negatives, sample_size)
+                    else:
+                        # recall_results 已按融合分数降序排列，rank 越小越难。
+                        ordered_negatives = sorted(
+                            negatives, key=lambda row: (row[3], row[0])
+                        )
+                        hard = ordered_negatives[:hard_count]
+                        remaining = ordered_negatives[hard_count:]
+                        random_count = min(
+                            hard_negative_random_count, len(remaining)
+                        )
+                        random_tail = (
+                            rng.sample(remaining, random_count)
+                            if random_count
+                            else []
+                        )
+                        negatives = hard + random_tail
                 selected = positives + negatives
             selected.sort(key=lambda row: (row[3], row[0]))
             rows.extend(

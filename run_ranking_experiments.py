@@ -154,6 +154,12 @@ def evaluate_experiment(name, config, models, runtime_seconds=np.nan):
     positive_users = validation.loc[
         validation['label'] == 1, 'user_id'
     ].nunique()
+    recalls = {}
+    for cutoff in (50, 100, 150):
+        recalls[cutoff] = validation.loc[
+            (validation['label'] == 1) & (validation['rank'] < cutoff),
+            'user_id',
+        ].nunique() / len(expected_users)
     rows = []
     score_files = {
         'classifier': 'classifier_score_validate.csv',
@@ -191,6 +197,29 @@ def evaluate_experiment(name, config, models, runtime_seconds=np.nan):
             ks=(5, 10),
             expected_users=expected_users,
         )
+        from sklearn.metrics import log_loss, roc_auc_score
+
+        labels = evaluation['label'].to_numpy()
+        scores = evaluation[score_column].to_numpy()
+        auc = (
+            float(roc_auc_score(labels, scores))
+            if len(np.unique(labels)) > 1 else np.nan
+        )
+        binary_logloss = (
+            float(log_loss(labels, scores, labels=[0, 1]))
+            if len(np.unique(labels)) > 1 else np.nan
+        )
+        model_runtime = runtime_by_model.get(model, runtime_seconds)
+        if isinstance(model_runtime, dict):
+            training_seconds = model_runtime.get('training_seconds', np.nan)
+            prediction_seconds = model_runtime.get('prediction_seconds', np.nan)
+            total_seconds = model_runtime.get(
+                'total_seconds', training_seconds + prediction_seconds
+            )
+        else:
+            training_seconds = np.nan
+            prediction_seconds = np.nan
+            total_seconds = model_runtime
         rows.append({
             'experiment': name,
             'status': 'completed',
@@ -198,6 +227,9 @@ def evaluate_experiment(name, config, models, runtime_seconds=np.nan):
             'fusion_method': config['fusion'],
             'candidate_topk': config['topk'],
             'candidate_coverage': positive_users / len(expected_users),
+            'recall@50': recalls[50],
+            'recall@100': recalls[100],
+            'recall@150': recalls[150],
             'ranking_model': model,
             'feature_count': feature_count,
             'ndcg@5': metrics['ndcg@5'],
@@ -205,10 +237,12 @@ def evaluate_experiment(name, config, models, runtime_seconds=np.nan):
             'ndcg@10': metrics['ndcg@10'],
             'hit_rate@10': metrics['hit_rate@10'],
             'mrr': metrics['mrr'],
-            'training_prediction_seconds': runtime_by_model.get(
-                model, runtime_seconds
-            ),
-            'peak_memory_mb': np.nan,
+            'auc': auc,
+            'logloss': binary_logloss,
+            'training_seconds': training_seconds,
+            'prediction_seconds': prediction_seconds,
+            'training_prediction_seconds': total_seconds,
+            'peak_memory_mb': runtime_by_model.get('peak_memory_mb', np.nan),
         })
     return rows
 

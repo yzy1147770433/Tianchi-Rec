@@ -42,3 +42,13 @@ ranking/
   因导入召回阶段而强制加载深度学习依赖。
 - `_stage.py` 只负责阶段执行顺序、缓存读写和环境变量兼容。
 - 根目录兼容入口继续支持原有流水线，便于旧命令和已有产物断点续跑。
+
+## 离线诊断入口
+
+- `run_gpu_content_similarity.py`：使用 GPU FAISS 生成精确内容向量近邻缓存，并记录可复核元数据。
+- `run_youtubednn_diagnostics.py`：独立训练/评估 YouTubeDNN，保存曲线、ID/padding 检查和 Recall。
+- `run_din_diagnostics.py`：在已构建特征上独立训练完整 DIN，保存 checkpoint、曲线和统一排序指标。
+- `run_prediction_ensemble_search.py`：校验三模型候选键一致性，计算用户内相关性、命中重合并搜索融合权重。
+- `run_user_group_analysis.py`：按历史长度输出模型指标及通道新增、独占命中和 ItemCF 重合率。
+
+这些脚本只消费已有离线产物，不改变主流水线接口；大型预测和模型文件仍保留在 artifacts 中，不进入 Git。

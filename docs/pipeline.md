@@ -72,6 +72,9 @@ python run_pipeline.py --mode validate --recall itemcf --valid-users 20000
 - `--recall-channels itemcf,embedding,youtubednn_usercf`: explicit channel
   selection; aliases and the true dictionary keys are both accepted.
 - `--recall-topk 150`: candidate count before ranking (default).
+- `--itemcf-topk` / `--embedding-topk` / `--youtubednn-topk` /
+  `--youtubednn-usercf-topk` / `--cold-start-topk`: independent channel
+  depths. They default to 50/50/20/50/100.
 - `--fusion-method weighted_rrf`: rank-only weighted fusion; use
   `legacy_score_fusion` for the old Min-Max ablation.
 - `--rrf-k 60`: RRF rank-smoothing constant.
@@ -83,6 +86,11 @@ python run_pipeline.py --mode validate --recall itemcf --valid-users 20000
   recall-source features.
 - `--rank-models classifier,ranker`: select CPU ranking models. Classifier is
   the default first experiment.
+- `--negative-sampling-strategy hard_negative_20`: keep every positive and
+  the highest-ranked 20 negatives per training user. `hard_negative_50` and
+  the legacy random sampler are also available.
+- `--ranker-group-policy positive_groups_only`: remove all-zero groups only
+  from LambdaRank training; validation and metrics still contain every user.
 - `--recall-only`: stop after recall evaluation and diagnostics.
 - `--run-ablation` / `--weight-search`: optional offline recall experiments.
 - `--din-batch-size 64`: reduce to 32 if GPU memory is insufficient.
@@ -128,3 +136,38 @@ python run_din_smoke.py \
   --result-dir artifacts/offline/recommended_v2_top150 \
   --train-rows 20000 --validation-rows 20000 --epochs 1
 ```
+
+## Full-model diagnostics
+
+After Classifier, LambdaRank, and DIN have produced predictions for exactly the
+same validation candidate table, search convex ensemble weights in increments
+of 0.05:
+
+```bash
+python run_prediction_ensemble_search.py \
+  --classifier artifacts/offline/deep_recall_top150/classifier_score_validate.csv \
+  --ranker artifacts/offline/deep_recall_top150/ranker_score_validate.csv \
+  --din artifacts/offline/din_full/din_score_validate.csv \
+  --output-dir artifacts/offline/prediction_ensemble --units 20
+```
+
+The command rejects duplicate or mismatched user-item keys and saves
+`best_model_weights.json`, all 231 combinations, mean user-level Spearman
+correlations, model hit overlap, and the best validation scores. It does not
+overwrite production defaults.
+
+History-length diagnostics reproduce the `seed=42` validation split and use
+the fixed groups 1–3, 4–10, and >10 clicks:
+
+```bash
+python run_user_group_analysis.py --data-dir data/raw \
+  --recall-dir artifacts/offline/deep_recall_top150 \
+  --classifier artifacts/offline/deep_recall_top150/classifier_score_validate.csv \
+  --ranker artifacts/offline/deep_recall_top150/ranker_score_validate.csv \
+  --din artifacts/offline/din_full/din_score_validate.csv \
+  --ensemble artifacts/offline/prediction_ensemble/best_ensemble_score_validate.csv \
+  --output-dir artifacts/offline/user_groups
+```
+
+See [the full RTX 3090 experiment report](experiment_report.md) for executed
+metrics and limitations.

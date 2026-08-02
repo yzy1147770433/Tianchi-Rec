@@ -71,6 +71,13 @@ DEFAULT_ENABLED_RECALL_CHANNELS = RECALL_PROFILES[DEFAULT_RECALL_PROFILE]
 DEFAULT_RECALL_FUSION_METHOD = 'weighted_rrf'
 DEFAULT_RRF_K = 60
 DEFAULT_FINAL_RECALL_TOPK = 150
+DEFAULT_RECALL_CHANNEL_TOPKS = {
+    'itemcf_sim_itemcf_recall': 50,
+    'embedding_sim_item_recall': 50,
+    'youtubednn_recall': 20,
+    'youtubednn_usercf_recall': 50,
+    'cold_start_recall': 100,
+}
 RECALL_EVAL_CUTOFFS = (10, 20, 30, 40, 50, 100, 150, 200)
 FEATURE_VERSION = 'recall_sources_v2'
 DATA_SPLIT_VERSION = 'user_holdout_last_click_seed42_v1'

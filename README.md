@@ -1,5 +1,26 @@
 # 天池新闻推荐：多路召回与融合排序
 
+## RTX 3090 全量验证结果（2026-08-01）
+
+以下数字均来自同一 `seed=42`、20,000 用户最后一次点击留出验证集，分母包含候选池未覆盖答案的用户；完整记录见
+[实验报告](docs/experiment_report.md)。这不是测试集或线上成绩。
+
+| 配置 | 候选覆盖率 | NDCG@5 | HitRate@5 | NDCG@10 | HitRate@10 |
+|---|---:|---:|---:|---:|---:|
+| 深召回 + Classifier | 0.74715 | 0.280424 | 0.40255 | 0.321649 | 0.52955 |
+| 深召回 + LambdaRank | 0.74715 | 0.281738 | 0.40345 | 0.321854 | 0.52710 |
+| 深召回 + DIN（全量训练） | 0.74715 | 0.256463 | 0.37315 | 0.296868 | 0.49810 |
+| 三模型验证集融合（0.35/0.50/0.15） | 0.74715 | **0.285786** | **0.40945** | **0.326538** | **0.53500** |
+
+深召回使用 ItemCF Top150、Embedding Top100、YouTubeDNN UserCF Top100，并以 Weighted RRF 保留
+Top150。200,000 用户召回评估中，ItemCF@50 为 `0.632335`，RRF@50 为 `0.621570`，
+RRF@100 为 `0.706125`，RRF@150 为 `0.748360`，完整四路候选并集为 `0.767960`。
+这说明 RRF@50 仍可能低于强通道，但扩大候选池后覆盖率显著上升，应由精排模型输出最终 Top5。
+
+已完成的 GPU 实验包括：A–E 排序消融、三种负采样与两种 LambdaRank group 策略、深召回、
+修复后的 YouTubeDNN 全量训练、DIN 全量训练、0.05 步长三模型融合搜索及历史长度分组分析。
+Cold Start 在最终深召回中未启用；相关效果不被表述为已验证结果。
+
 ## Recommended v2 defaults
 
 The default multi-recall profile now uses only ItemCF, content Embedding, and
@@ -230,6 +251,11 @@ python run_pipeline.py --mode all --recall multi \
 | `--recall-channels` | 未指定 | 显式选择通道，优先于 profile |
 | `--experiment-name` | `recommended_v2_top150` | 隔离召回、特征、模型和分数产物 |
 | `--recall-topk` | `150` | 精排前每个用户保留的融合候选数 |
+| `--itemcf-topk` | `50` | ItemCF 单通道召回深度 |
+| `--embedding-topk` | `50` | 内容 Embedding 单通道召回深度 |
+| `--youtubednn-topk` | `20` | YouTubeDNN Direct 单通道召回深度 |
+| `--youtubednn-usercf-topk` | `50` | YouTubeDNN UserCF 单通道召回深度 |
+| `--cold-start-topk` | `100` | Cold Start 单通道召回深度（默认通道关闭） |
 | `--fusion-method` | `weighted_rrf` | `weighted_rrf` 或旧版 `legacy_score_fusion` |
 | `--rrf-k` | `60` | RRF 排名平滑常数 |
 | `--channel-weights` | 配置默认值 | JSON 格式的通道权重覆盖 |
@@ -238,6 +264,9 @@ python run_pipeline.py --mode all --recall multi \
 | `--weight-search` | 关闭 | 逐通道搜索 RRF 权重（不覆盖默认配置） |
 | `--rank-models` | `classifier` | 可选 `classifier,ranker`；先运行分类模型，再按需运行 LambdaRank |
 | `--disable-recall-source-features` | 关闭 | 消融时关闭召回来源特征 |
+| `--negative-sampling-strategy` | `legacy_sampling` | `legacy_sampling`、`hard_negative_20` 或 `hard_negative_50` |
+| `--hard-negative-random-count` | `0` | 困难负样本之外追加的确定性随机尾部数量 |
+| `--ranker-group-policy` | `all_groups` | LambdaRank 保留全部 group 或仅保留含正样本的训练 group |
 | `--din` | 关闭 | 是否训练 DIN |
 | `--din-batch-size` | `64` | DIN batch size，显存不足时可改为 32 |
 | `--din-epochs` | `2` | DIN 训练轮数 |
@@ -312,6 +341,18 @@ python run_recall_experiments.py --experiment weight-search --recall-topk 150 --
 
 # 汇总已有 A-E 排序实验；缺失实验只标记，不伪造结果
 python run_ranking_experiments.py --experiment ablation --models classifier,ranker
+
+# 复用同一份 RRF 候选，运行负采样与 LambdaRank group 消融
+python run_negative_sampling_experiments.py \
+  --base-result-dir artifacts/offline/recommended_v2_top150 \
+  --output-dir artifacts/offline/negative_sampling_ablation
+
+# 深召回：各通道独立 TopK，最终仍保留 RRF Top150
+python run_pipeline.py --mode offline --recall multi \
+  --recall-channels itemcf,embedding,youtubednn_usercf \
+  --itemcf-topk 150 --embedding-topk 100 \
+  --youtubednn-usercf-topk 100 --recall-topk 150 \
+  --experiment-name deep_recall_top150
 ```
 
 ### 排序特征

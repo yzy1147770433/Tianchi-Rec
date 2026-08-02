@@ -23,6 +23,7 @@ from tianchi_rec.config import (
     DATA_DIR,
     DATA_SPLIT_VERSION,
     DEFAULT_FINAL_RECALL_TOPK,
+    DEFAULT_RECALL_CHANNEL_TOPKS,
     DEFAULT_RECALL_CHANNEL_WEIGHTS,
     DEFAULT_RECALL_FUSION_METHOD,
     DEFAULT_RECALL_PROFILE,
@@ -72,10 +73,23 @@ def build_run_config(args, pipeline_mode):
         'fusion_method': args.fusion_method,
         'rrf_k': args.rrf_k,
         'final_recall_topk': args.recall_topk,
+        'channel_topk': {
+            'itemcf_sim_itemcf_recall': args.itemcf_topk,
+            'embedding_sim_item_recall': args.embedding_topk,
+            'youtubednn_recall': args.youtubednn_topk,
+            'youtubednn_usercf_recall': args.youtubednn_usercf_topk,
+            'cold_start_recall': args.cold_start_topk,
+        },
         'valid_users': args.valid_users,
         'recall_source_features': not args.disable_recall_source_features,
         'negative_sample_rate': args.negative_sample_rate,
         'negative_sample_max_per_group': args.negative_sample_max_per_group,
+        'negative_sampling_strategy': args.negative_sampling_strategy,
+        'hard_negative_random_count': args.hard_negative_random_count,
+        'ranker_group_policy': args.ranker_group_policy,
+        'youtubednn_batch_size': args.youtubednn_batch_size,
+        'youtubednn_epochs': args.youtubednn_epochs,
+        'youtubednn_patience': args.youtubednn_patience,
         'rank_models': sorted(
             name.strip() for name in args.rank_models.split(',') if name.strip()
         ),
@@ -153,6 +167,14 @@ def run_validation(args):
         'VALID_USER_NUMS': args.valid_users,
         'FINAL_RECALL_TOPK': args.recall_topk,
         'SINGLE_RECALL_TOPK': args.recall_topk,
+        'ITEMCF_RECALL_TOPK': args.itemcf_topk,
+        'EMBEDDING_RECALL_TOPK': args.embedding_topk,
+        'YOUTUBEDNN_RECALL_TOPK': args.youtubednn_topk,
+        'YOUTUBEDNN_USERCF_RECALL_TOPK': args.youtubednn_usercf_topk,
+        'COLD_START_RECALL_TOPK': args.cold_start_topk,
+        'YOUTUBEDNN_BATCH_SIZE': args.youtubednn_batch_size,
+        'YOUTUBEDNN_EPOCHS': args.youtubednn_epochs,
+        'YOUTUBEDNN_EARLY_STOPPING_PATIENCE': args.youtubednn_patience,
         'RECALL_FUSION_METHOD': args.fusion_method,
         'RRF_K': args.rrf_k,
         'RECALL_PROFILE': args.recall_profile,
@@ -162,6 +184,8 @@ def run_validation(args):
         ),
         'NEGATIVE_SAMPLE_RATE': args.negative_sample_rate,
         'NEGATIVE_SAMPLE_MAX_PER_GROUP': args.negative_sample_max_per_group,
+        'NEGATIVE_SAMPLING_STRATEGY': args.negative_sampling_strategy,
+        'HARD_NEGATIVE_RANDOM_COUNT': args.hard_negative_random_count,
         'PIPELINE_CONFIG_FINGERPRINT': config_fingerprint(run_config),
         'RUN_RECALL_ABLATION': '1' if args.run_ablation else '0',
         'RUN_RRF_WEIGHT_SEARCH': '1' if args.weight_search else '0',
@@ -196,6 +220,7 @@ def run_validation(args):
         ),
         'ENABLE_DIN': '1' if args.din else '0',
         'RANK_MODELS': args.rank_models,
+        'RANKER_GROUP_POLICY': args.ranker_group_policy,
         'DIN_BATCH_SIZE': args.din_batch_size,
         'DIN_EPOCHS': args.din_epochs,
         'DIN_EARLY_STOPPING_PATIENCE': args.din_patience,
@@ -236,6 +261,14 @@ def run_final(args):
         'RECALL_RESULT_DIR': result_dir,
         'FINAL_RECALL_TOPK': args.recall_topk,
         'SINGLE_RECALL_TOPK': args.recall_topk,
+        'ITEMCF_RECALL_TOPK': args.itemcf_topk,
+        'EMBEDDING_RECALL_TOPK': args.embedding_topk,
+        'YOUTUBEDNN_RECALL_TOPK': args.youtubednn_topk,
+        'YOUTUBEDNN_USERCF_RECALL_TOPK': args.youtubednn_usercf_topk,
+        'COLD_START_RECALL_TOPK': args.cold_start_topk,
+        'YOUTUBEDNN_BATCH_SIZE': args.youtubednn_batch_size,
+        'YOUTUBEDNN_EPOCHS': args.youtubednn_epochs,
+        'YOUTUBEDNN_EARLY_STOPPING_PATIENCE': args.youtubednn_patience,
         'RECALL_FUSION_METHOD': args.fusion_method,
         'RRF_K': args.rrf_k,
         'RECALL_PROFILE': args.recall_profile,
@@ -245,6 +278,8 @@ def run_final(args):
         ),
         'NEGATIVE_SAMPLE_RATE': args.negative_sample_rate,
         'NEGATIVE_SAMPLE_MAX_PER_GROUP': args.negative_sample_max_per_group,
+        'NEGATIVE_SAMPLING_STRATEGY': args.negative_sampling_strategy,
+        'HARD_NEGATIVE_RANDOM_COUNT': args.hard_negative_random_count,
         'PIPELINE_CONFIG_FINGERPRINT': config_fingerprint(run_config),
     }
     if args.channel_weights:
@@ -274,6 +309,7 @@ def run_final(args):
         ),
         'ENABLE_DIN': '1' if args.din else '0',
         'RANK_MODELS': args.rank_models,
+        'RANKER_GROUP_POLICY': args.ranker_group_policy,
         'DIN_BATCH_SIZE': args.din_batch_size,
         'DIN_EPOCHS': args.din_epochs,
         'DIN_EARLY_STOPPING_PATIENCE': args.din_patience,
@@ -306,6 +342,26 @@ def parse_args():
         '--recall-topk', type=int, default=DEFAULT_FINAL_RECALL_TOPK
     )
     parser.add_argument(
+        '--itemcf-topk', type=int,
+        default=DEFAULT_RECALL_CHANNEL_TOPKS['itemcf_sim_itemcf_recall'],
+    )
+    parser.add_argument(
+        '--embedding-topk', type=int,
+        default=DEFAULT_RECALL_CHANNEL_TOPKS['embedding_sim_item_recall'],
+    )
+    parser.add_argument(
+        '--youtubednn-topk', type=int,
+        default=DEFAULT_RECALL_CHANNEL_TOPKS['youtubednn_recall'],
+    )
+    parser.add_argument(
+        '--youtubednn-usercf-topk', type=int,
+        default=DEFAULT_RECALL_CHANNEL_TOPKS['youtubednn_usercf_recall'],
+    )
+    parser.add_argument(
+        '--cold-start-topk', type=int,
+        default=DEFAULT_RECALL_CHANNEL_TOPKS['cold_start_recall'],
+    )
+    parser.add_argument(
         '--fusion-method',
         choices=['weighted_rrf', 'legacy_score_fusion'],
         default=DEFAULT_RECALL_FUSION_METHOD,
@@ -322,6 +378,20 @@ def parse_args():
     )
     parser.add_argument('--negative-sample-rate', type=float, default=0.05)
     parser.add_argument('--negative-sample-max-per-group', type=int, default=5)
+    parser.add_argument(
+        '--negative-sampling-strategy',
+        choices=['legacy_sampling', 'hard_negative_20', 'hard_negative_50'],
+        default='legacy_sampling',
+    )
+    parser.add_argument('--hard-negative-random-count', type=int, default=0)
+    parser.add_argument('--youtubednn-batch-size', type=int, default=256)
+    parser.add_argument('--youtubednn-epochs', type=int, default=1)
+    parser.add_argument('--youtubednn-patience', type=int, default=2)
+    parser.add_argument(
+        '--ranker-group-policy',
+        choices=['all_groups', 'positive_groups_only'],
+        default='all_groups',
+    )
     parser.add_argument(
         '--recall-only', action='store_true',
         help='Stop after recall evaluation/fusion without feature and rank stages.',
@@ -351,12 +421,28 @@ def main():
     args = parse_args()
     if args.recall_topk <= 0:
         raise ValueError('--recall-topk must be positive.')
+    channel_topks = {
+        '--itemcf-topk': args.itemcf_topk,
+        '--embedding-topk': args.embedding_topk,
+        '--youtubednn-topk': args.youtubednn_topk,
+        '--youtubednn-usercf-topk': args.youtubednn_usercf_topk,
+        '--cold-start-topk': args.cold_start_topk,
+    }
+    invalid_topks = [name for name, value in channel_topks.items() if value <= 0]
+    if invalid_topks:
+        raise ValueError(f'Channel TopK values must be positive: {invalid_topks}')
     if args.rrf_k <= 0:
         raise ValueError('--rrf-k must be positive.')
     if args.negative_sample_rate < 0:
         raise ValueError('--negative-sample-rate must be non-negative.')
     if args.negative_sample_max_per_group <= 0:
         raise ValueError('--negative-sample-max-per-group must be positive.')
+    if args.hard_negative_random_count < 0:
+        raise ValueError('--hard-negative-random-count must be non-negative.')
+    if args.youtubednn_batch_size <= 0 or args.youtubednn_epochs <= 0:
+        raise ValueError('YouTubeDNN batch size and epochs must be positive.')
+    if args.youtubednn_patience < 0:
+        raise ValueError('--youtubednn-patience must be non-negative.')
     if args.din_patience < 0:
         raise ValueError('--din-patience must be non-negative.')
     rank_models = {name.strip() for name in args.rank_models.split(',') if name.strip()}

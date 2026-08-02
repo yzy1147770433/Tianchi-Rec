@@ -1,6 +1,7 @@
 """LightGBM LambdaRank and binary-classifier models."""
 
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,22 @@ def _validate_rank_groups(sorted_df, groups, name):
     )
 
 
+def _prepare_ranker_training(train_df, group_policy='all_groups'):
+    """按策略准备 LambdaRank 训练集；验证集永远不经过此过滤。"""
+    if group_policy not in {'all_groups', 'positive_groups_only'}:
+        raise ValueError(
+            "group_policy must be 'all_groups' or 'positive_groups_only'."
+        )
+    prepared = train_df
+    if group_policy == 'positive_groups_only':
+        has_positive = train_df.groupby('user_id')['label'].transform('max').gt(0)
+        prepared = train_df.loc[has_positive].copy()
+        if prepared.empty:
+            raise ValueError('No positive LambdaRank training groups remain.')
+    sorted_df, groups = _sort_for_ranker(prepared)
+    return sorted_df, groups
+
+
 def _save_feature_importance(model, feature_columns, output_dir, prefix):
     output_dir = Path(output_dir)
     for importance_type in ('gain', 'split'):
@@ -59,13 +76,16 @@ def train_ranker(
     mode,
     output_dir,
     random_seed=2026,
+    runtime_details=None,
 ):
     try:
         import lightgbm as lgb
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError('LightGBM is required for ranking.') from exc
-    train_sorted, train_groups = _sort_for_ranker(train_df)
+    group_policy = os.environ.get('RANKER_GROUP_POLICY', 'all_groups')
+    train_sorted, train_groups = _prepare_ranker_training(train_df, group_policy)
     _validate_rank_groups(train_sorted, train_groups, 'train')
+    print(f'LambdaRank training group policy: {group_policy}')
     model = lgb.LGBMRanker(
         objective='lambdarank',
         metric='ndcg',
@@ -91,12 +111,14 @@ def train_ranker(
             'eval_at': [1, 3, 5, 10],
             'callbacks': [lgb.early_stopping(60), lgb.log_evaluation(25)],
         }
+    train_started = time.perf_counter()
     model.fit(
         train_sorted[feature_columns],
         train_sorted['label'],
         group=train_groups,
         **fit_kwargs,
     )
+    training_seconds = time.perf_counter() - train_started
     output_dir = Path(output_dir)
     _save_booster(
         model.booster_,
@@ -106,10 +128,22 @@ def train_ranker(
     _save_feature_importance(
         model, feature_columns, output_dir, 'ranker'
     )
-    return model.predict(
+    prediction_started = time.perf_counter()
+    scores = model.predict(
         predict_df[feature_columns],
         num_iteration=model.best_iteration_,
     ).astype(np.float32)
+    prediction_seconds = time.perf_counter() - prediction_started
+    if runtime_details is not None:
+        runtime_details['ranker'] = {
+            'training_seconds': training_seconds,
+            'prediction_seconds': prediction_seconds,
+            'total_seconds': training_seconds + prediction_seconds,
+            'group_policy': group_policy,
+            'training_groups': int(len(train_groups)),
+            'training_group_rows': int(train_groups.sum()),
+        }
+    return scores
 
 
 def train_classifier(
@@ -119,6 +153,7 @@ def train_classifier(
     mode,
     output_dir,
     random_seed=2026,
+    runtime_details=None,
 ):
     try:
         import lightgbm as lgb
@@ -152,7 +187,9 @@ def train_classifier(
                 lgb.log_evaluation(25),
             ],
         }
+    train_started = time.perf_counter()
     model.fit(train_df[feature_columns], train_df['label'], **fit_kwargs)
+    training_seconds = time.perf_counter() - train_started
     output_dir = Path(output_dir)
     _save_booster(
         model.booster_,
@@ -162,7 +199,16 @@ def train_classifier(
     _save_feature_importance(
         model, feature_columns, output_dir, 'classifier'
     )
-    return model.predict_proba(
+    prediction_started = time.perf_counter()
+    scores = model.predict_proba(
         predict_df[feature_columns],
         num_iteration=model.best_iteration_,
     )[:, 1].astype(np.float32)
+    prediction_seconds = time.perf_counter() - prediction_started
+    if runtime_details is not None:
+        runtime_details['classifier'] = {
+            'training_seconds': training_seconds,
+            'prediction_seconds': prediction_seconds,
+            'total_seconds': training_seconds + prediction_seconds,
+        }
+    return scores

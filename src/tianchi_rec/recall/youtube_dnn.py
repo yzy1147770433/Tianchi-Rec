@@ -1,7 +1,10 @@
 """Dataset helpers for the optional YouTubeDNN recall channel."""
 
 import random
+import json
+import os
 import pickle
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -89,16 +92,28 @@ def train_youtube_dnn_recall(data, output_dir, topk=20, random_state=42):
     random.seed(random_state)
     tf.random.set_seed(random_state)
     output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for gpu in tf.config.list_physical_devices('GPU'):
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError:
+            pass
     working = data.copy()
     raw_history = working.groupby('user_id')['click_article_id'].agg(set).to_dict()
     sequence_length = 30
     raw_user_profile = working[['user_id']].drop_duplicates('user_id')
     raw_item_profile = working[['click_article_id']].drop_duplicates('click_article_id')
-    feature_sizes = {}
-    for feature in ('click_article_id', 'user_id'):
-        encoder = LabelEncoder()
-        working[feature] = encoder.fit_transform(working[feature])
-        feature_sizes[feature] = int(working[feature].max()) + 1
+    user_encoder = LabelEncoder()
+    item_encoder = LabelEncoder()
+    working['user_id'] = user_encoder.fit_transform(working['user_id'])
+    # 0 专用于 padding，真实文章编码从 1 开始，避免 mask/padding 冲突。
+    working['click_article_id'] = (
+        item_encoder.fit_transform(working['click_article_id']) + 1
+    )
+    feature_sizes = {
+        'user_id': int(working['user_id'].max()) + 1,
+        'click_article_id': int(working['click_article_id'].max()) + 1,
+    }
     user_profile = working[['user_id']].drop_duplicates('user_id')
     item_profile = working[['click_article_id']].drop_duplicates('click_article_id')
     user_to_raw = dict(zip(user_profile['user_id'], raw_user_profile['user_id']))
@@ -133,14 +148,67 @@ def train_youtube_dnn_recall(data, output_dir, topk=20, random_state=42):
         num_sampled=5,
         item_name='click_article_id',
     )
-    model = YoutubeDNN(
-        user_columns,
-        item_columns,
-        sampler_config=sampler,
-        user_dnn_hidden_units=(64, embedding_dim),
-    )
-    model.compile(optimizer='adam', loss=sampledsoftmaxloss)
-    model.fit(train_input, train_label, batch_size=256, epochs=1, verbose=1)
+    def build_model():
+        current = YoutubeDNN(
+            user_columns,
+            item_columns,
+            sampler_config=sampler,
+            user_dnn_hidden_units=(64, embedding_dim),
+        )
+        current.compile(optimizer='adam', loss=sampledsoftmaxloss)
+        return current
+
+    requested_batch = int(os.environ.get('YOUTUBEDNN_BATCH_SIZE', '256'))
+    epochs = int(os.environ.get('YOUTUBEDNN_EPOCHS', '1'))
+    patience = int(os.environ.get('YOUTUBEDNN_EARLY_STOPPING_PATIENCE', '2'))
+    if requested_batch <= 0 or epochs <= 0 or patience < 0:
+        raise ValueError('Invalid YouTubeDNN batch/epochs/patience configuration.')
+    batch_candidates = []
+    current_batch = requested_batch
+    while current_batch >= 64:
+        if current_batch not in batch_candidates:
+            batch_candidates.append(current_batch)
+        current_batch //= 2
+    if not batch_candidates:
+        batch_candidates = [requested_batch]
+
+    model = None
+    history = None
+    selected_batch = None
+    started = time.perf_counter()
+    for batch_size in batch_candidates:
+        tf.keras.backend.clear_session()
+        model = build_model()
+        callbacks = [
+            tf.keras.callbacks.CSVLogger(
+                str(output_dir / 'youtubednn_training_curve.csv')
+            ),
+            tf.keras.callbacks.ModelCheckpoint(
+                str(output_dir / 'youtubednn_best.weights.h5'),
+                monitor='val_loss', save_best_only=True, save_weights_only=True,
+            ),
+            tf.keras.callbacks.EarlyStopping(
+                monitor='val_loss', patience=patience, restore_best_weights=True,
+            ),
+        ]
+        try:
+            history = model.fit(
+                train_input,
+                train_label,
+                validation_data=(test_input, np.ones(len(test_examples))),
+                batch_size=batch_size,
+                epochs=epochs,
+                verbose=2,
+                callbacks=callbacks,
+            )
+            selected_batch = batch_size
+            break
+        except tf.errors.ResourceExhaustedError:
+            print(f'YouTubeDNN OOM at batch_size={batch_size}; retrying smaller batch.')
+            model = None
+    if model is None or history is None:
+        raise RuntimeError('YouTubeDNN exhausted every configured batch-size fallback.')
+    training_seconds = time.perf_counter() - started
     user_model = Model(inputs=model.user_input, outputs=model.user_embedding)
     user_vectors = user_model.predict(test_input, batch_size=2 ** 12)
     item_vectors = model.get_layer(
@@ -149,34 +217,64 @@ def train_youtube_dnn_recall(data, output_dir, topk=20, random_state=42):
     user_vectors /= np.maximum(np.linalg.norm(user_vectors, axis=1, keepdims=True), 1e-12)
     item_vectors /= np.maximum(np.linalg.norm(item_vectors, axis=1, keepdims=True), 1e-12)
     user_embeddings = {
-        user_to_raw[user_id]: vector
-        for user_id, vector in zip(user_profile['user_id'], user_vectors)
+        user_to_raw[int(user_id)]: vector
+        for user_id, vector in zip(test_input['user_id'], user_vectors)
     }
+    encoded_item_ids = item_profile['click_article_id'].to_numpy(dtype=np.int64)
+    candidate_item_vectors = item_vectors[encoded_item_ids]
     item_embeddings = {
         item_to_raw[item_id]: vector
-        for item_id, vector in zip(item_profile['click_article_id'], item_vectors)
+        for item_id, vector in zip(encoded_item_ids, candidate_item_vectors)
     }
     with (output_dir / 'user_youtube_emb.pkl').open('wb') as file:
         pickle.dump(user_embeddings, file)
     with (output_dir / 'item_youtube_emb.pkl').open('wb') as file:
         pickle.dump(item_embeddings, file)
     index = faiss.IndexFlatIP(embedding_dim)
-    index.add(item_vectors)
+    index.add(np.ascontiguousarray(candidate_item_vectors))
+    query_topk = min(
+        len(encoded_item_ids),
+        topk + max((len(items) for items in raw_history.values()), default=0),
+    )
     similarities, indexes = index.search(
         np.ascontiguousarray(user_vectors),
-        topk,
+        query_topk,
     )
     recall = defaultdict(dict)
     for target, scores, neighbors in zip(test_input['user_id'], similarities, indexes):
         raw_user = user_to_raw[target]
         for neighbor, score in zip(neighbors, scores):
-            raw_item = item_to_raw[neighbor]
+            encoded_item = int(encoded_item_ids[neighbor])
+            raw_item = item_to_raw[encoded_item]
             if raw_item not in raw_history.get(raw_user, set()):
                 recall[raw_user][raw_item] = float(score)
+                if len(recall[raw_user]) >= topk:
+                    break
     recall = {
         user_id: sorted(items.items(), key=lambda pair: pair[1], reverse=True)
         for user_id, items in recall.items()
     }
     with (output_dir / 'youtube_u2i_dict.pkl').open('wb') as file:
         pickle.dump(recall, file)
+    diagnostics = {
+        'train_examples': len(train_examples),
+        'validation_examples': len(test_examples),
+        'users': int(working['user_id'].nunique()),
+        'items': int(working['click_article_id'].nunique()),
+        'padding_id': 0,
+        'minimum_item_id': int(working['click_article_id'].min()),
+        'requested_batch_size': requested_batch,
+        'selected_batch_size': selected_batch,
+        'epochs_requested': epochs,
+        'epochs_completed': len(history.history.get('loss', [])),
+        'training_seconds': training_seconds,
+        'history': {key: [float(v) for v in values] for key, values in history.history.items()},
+        'user_embedding_norm_mean': float(np.linalg.norm(user_vectors, axis=1).mean()),
+        'item_embedding_norm_mean': float(np.linalg.norm(candidate_item_vectors, axis=1).mean()),
+        'average_recall_count': float(np.mean([len(v) for v in recall.values()])),
+        'minimum_recall_count': int(min((len(v) for v in recall.values()), default=0)),
+    }
+    (output_dir / 'youtubednn_diagnostics.json').write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
     return recall

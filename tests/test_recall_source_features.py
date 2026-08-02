@@ -16,6 +16,7 @@ from tianchi_rec.artifacts import validate_run_config, write_run_config
 from tianchi_rec.config import (
     DEFAULT_ENABLED_RECALL_CHANNELS,
     DEFAULT_FINAL_RECALL_TOPK,
+    DEFAULT_RECALL_CHANNEL_TOPKS,
     resolve_recall_channels,
 )
 from tianchi_rec.evaluation import ranking_metrics
@@ -57,6 +58,9 @@ class RecallSourceFeatureTest(unittest.TestCase):
     def test_recommended_profile_and_default_topk(self):
         self.assertEqual(resolve_recall_channels(), DEFAULT_ENABLED_RECALL_CHANNELS)
         self.assertEqual(DEFAULT_FINAL_RECALL_TOPK, 150)
+        self.assertEqual(DEFAULT_RECALL_CHANNEL_TOPKS[ITEMCF], 50)
+        self.assertEqual(DEFAULT_RECALL_CHANNEL_TOPKS[EMBEDDING], 50)
+        self.assertEqual(DEFAULT_RECALL_CHANNEL_TOPKS[USERCF], 50)
         self.assertNotIn('youtubednn_recall', DEFAULT_ENABLED_RECALL_CHANNELS)
         self.assertNotIn('cold_start_recall', DEFAULT_ENABLED_RECALL_CHANNELS)
 
